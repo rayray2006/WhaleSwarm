@@ -1,0 +1,110 @@
+[
+  {
+    "slug": "fed-interest-rates-january-2025",
+    "title": "Fed decision in January?",
+    "meeting_date": "2025-01-29",
+    "start_date": "2024-11-07T22:45:02.085685Z",
+    "end_date": "2025-01-29T12:00:00Z",
+    "volume": 190915049.199301,
+    "winner": "No Change",
+    "market_count": 5,
+    "event_url": "https://polymarket.com/event/fed-interest-rates-january-2025",
+    "api_url": "https://gamma-api.polymarket.com/events/slug/fed-interest-rates-january-2025"
+  },
+  {
+    "slug": "fed-decision-in-march",
+    "title": "Fed decision in March?",
+    "meeting_date": "2025-03-19",
+    "start_date": "2024-12-18T20:51:27.65969Z",
+    "end_date": "2025-03-19T12:00:00Z",
+    "volume": 78037951.238159,
+    "winner": "No Change",
+    "market_count": 4,
+    "event_url": "https://polymarket.com/event/fed-decision-in-march",
+    "api_url": "https://gamma-api.polymarket.com/events/slug/fed-decision-in-march"
+  },
+  {
+    "slug": "fed-decision-in-may-2025",
+    "title": "Fed decision in May?",
+    "meeting_date": "2025-05-07",
+    "start_date": "2025-01-23T19:43:00.646065Z",
+    "end_date": "2025-05-07T12:00:00Z",
+    "volume": 88372825.451562,
+    "winner": "No change",
+    "market_count": 4,
+    "event_url": "https://polymarket.com/event/fed-decision-in-may-2025",
+    "api_url": "https://gamma-api.polymarket.com/events/slug/fed-decision-in-may-2025"
+  },
+  {
+    "slug": "fed-decision-in-june",
+    "title": "Fed decision in June?",
+    "meeting_date": "2025-06-18",
+    "start_date": "2025-02-07T00:24:27.857045Z",
+    "end_date": "2025-06-18T12:00:00Z",
+    "volume": 106895985.982213,
+    "winner": "No change",
+    "market_count": 4,
+    "event_url": "https://polymarket.com/event/fed-decision-in-june",
+    "api_url": "https://gamma-api.polymarket.com/events/slug/fed-decision-in-june"
+  },
+  {
+    "slug": "fed-decision-in-july",
+    "title": "Fed decision in July?",
+    "meeting_date": "2025-07-30",
+    "start_date": "2025-03-19T19:58:16.168348Z",
+    "end_date": "2025-07-30T12:00:00Z",
+    "volume": 136613627.403447,
+    "winner": "No change",
+    "market_count": 4,
+    "event_url": "https://polymarket.com/event/fed-decision-in-july",
+    "api_url": "https://gamma-api.polymarket.com/events/slug/fed-decision-in-july"
+  },
+  {
+    "slug": "fed-decision-in-september",
+    "title": "Fed decision in September?",
+    "meeting_date": "2025-09-17",
+    "start_date": "2025-05-07T23:12:28.392984Z",
+    "end_date": "2025-09-17T12:00:00Z",
+    "volume": 220591460.745363,
+    "winner": "25 bps decrease",
+    "market_count": 4,
+    "event_url": "https://polymarket.com/event/fed-decision-in-september",
+    "api_url": "https://gamma-api.polymarket.com/events/slug/fed-decision-in-september"
+  },
+  {
+    "slug": "fed-decision-in-october",
+    "title": "Fed decision in October?",
+    "meeting_date": "2025-10-29",
+    "start_date": "2025-06-19T16:50:25.707245Z",
+    "end_date": "2025-10-29T12:00:00Z",
+    "volume": 252485550.016563,
+    "winner": "25 bps decrease",
+    "market_count": 4,
+    "event_url": "https://polymarket.com/event/fed-decision-in-october",
+    "api_url": "https://gamma-api.polymarket.com/events/slug/fed-decision-in-october"
+  },
+  {
+    "slug": "fed-decision-in-december",
+    "title": "Fed decision in December?",
+    "meeting_date": "2025-12-10",
+    "start_date": "2025-07-31T19:48:22.854077Z",
+    "end_date": "2025-12-10T00:00:00Z",
+    "volume": 393905949.377453,
+    "winner": "25 bps decrease",
+    "market_count": 4,
+    "event_url": "https://polymarket.com/event/fed-decision-in-december",
+    "api_url": "https://gamma-api.polymarket.com/events/slug/fed-decision-in-december"
+  },
+  {
+    "slug": "fed-decision-in-january",
+    "title": "Fed decision in January?",
+    "meeting_date": "2026-01-28",
+    "start_date": "2025-09-17T19:05:35.801589Z",
+    "end_date": "2026-01-28T00:00:00Z",
+    "volume": 659499548.531115,
+    "winner": "No change",
+    "market_count": 4,
+    "event_url": "https://polymarket.com/event/fed-decision-in-january",
+    "api_url": "https://gamma-api.polymarket.com/events/slug/fed-decision-in-january"
+  }
+]
