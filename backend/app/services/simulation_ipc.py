@@ -17,6 +17,39 @@ logger = logging.getLogger(__name__)
 
 
 # ======================================================================
+# Helpers
+# ======================================================================
+
+def _summarise_action(action_name: str, args: dict, response: Any) -> str:
+    """Build a short human-readable string describing an action."""
+    # Social media posts / comments
+    if action_name in ("post", "tweet", "comment"):
+        text = args.get("content") or args.get("text") or args.get("body") or ""
+        return str(text)[:200] if text else action_name
+    # Trades
+    if action_name in ("buy_shares", "sell_shares"):
+        outcome = args.get("outcome", "?")
+        market = args.get("market_id", "?")
+        conv = args.get("conviction", "")
+        return f"{action_name} {outcome} on market {market}" + (f" (conviction {conv})" if conv else "")
+    # Social interactions
+    if action_name in ("like", "retweet", "repost", "quote_post", "upvote", "downvote"):
+        target = args.get("post_id") or args.get("tweet_id") or args.get("target_id") or ""
+        return f"{action_name} {target}".strip()
+    if action_name in ("follow", "unfollow"):
+        target = args.get("user_id") or args.get("target") or ""
+        return f"{action_name} {target}".strip()
+    if action_name == "search":
+        query = args.get("query") or args.get("q") or ""
+        return f"search: {query}" if query else "search"
+    # Fallback: stringify args keys
+    if args:
+        parts = [f"{k}={v}" for k, v in list(args.items())[:3]]
+        return f"{action_name}({', '.join(parts)})"
+    return action_name
+
+
+# ======================================================================
 # actions.jsonl parsing
 # ======================================================================
 
@@ -121,14 +154,23 @@ def get_run_state_from_actions(
 
         elif action_type == "agent_action":
             action_name = action.get("action", "unknown")
+            if action_name == "do_nothing":
+                action_counts["do_nothing"] = action_counts.get("do_nothing", 0) + 1
+                continue
             action_counts[action_name] = action_counts.get(action_name, 0) + 1
+            # Build a human-readable content string from arguments/response.
+            args = action.get("arguments", {})
+            response = action.get("response")
+            content = _summarise_action(action_name, args, response)
             agent_actions.append({
                 "round": action.get("_round", current_round),
                 "agent_id": action.get("agent_id"),
                 "agent_name": action.get("agent_name", ""),
                 "platform": action.get("platform", ""),
                 "action": action_name,
-                "arguments": action.get("arguments", {}),
+                "action_type": action_name,
+                "content": content,
+                "arguments": args,
                 "timestamp": action.get("_ts"),
             })
 

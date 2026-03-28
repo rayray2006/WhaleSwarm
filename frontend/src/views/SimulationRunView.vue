@@ -57,8 +57,8 @@
               {{ platformIcon(action.platform) }}
             </span>
             <span class="action-agent">{{ action.agent_name || action.agent_id || 'Agent' }}</span>
-            <span class="action-type tag">{{ action.action_type || action.type }}</span>
-            <span class="action-content">{{ truncate(action.content || action.text, 80) }}</span>
+            <span class="action-type tag">{{ action.action_type || action.action || action.type }}</span>
+            <span class="action-content">{{ truncate(action.content || action.text || '', 80) }}</span>
             <span class="action-round">R{{ action.round }}</span>
           </div>
           <div v-if="actions.length === 0" class="empty-feed">
@@ -304,14 +304,18 @@ export default {
         }
 
         // Extract tweets/reddit from actions if not provided separately
+        const tweetActions = ['post', 'tweet', 'create_post', 'quote_post']
+        const redditActions = ['post', 'create_post', 'create_comment']
         if (!data.twitter && !data.tweets) {
           this.tweets = this.actions
-            .filter(a => a.platform === 'twitter' && (a.action_type === 'post' || a.action_type === 'tweet' || a.type === 'tweet'))
+            .filter(a => a.platform === 'twitter' && tweetActions.includes(a.action_type || a.action))
+            .map(a => ({ ...a, author: a.agent_name, text: a.content }))
             .slice(-30)
         }
         if (!data.reddit && !data.reddit_posts) {
           this.redditPosts = this.actions
-            .filter(a => a.platform === 'reddit' && (a.action_type === 'post' || a.type === 'post'))
+            .filter(a => a.platform === 'reddit' && redditActions.includes(a.action_type || a.action))
+            .map(a => ({ ...a, author: a.agent_name, title: a.content, text: a.content }))
             .slice(-20)
         }
 
@@ -327,9 +331,9 @@ export default {
       }
     },
     mergeActions(newActions) {
-      const existingIds = new Set(this.actions.map(a => a.action_id || `${a.round}-${a.agent_id}-${a.platform}`))
+      const existingIds = new Set(this.actions.map(a => a.action_id || `${a.round}-${a.agent_id}-${a.platform}-${a.action}-${a.timestamp || ''}`))
       for (const action of newActions) {
-        const id = action.action_id || `${action.round}-${action.agent_id}-${action.platform}`
+        const id = action.action_id || `${action.round}-${action.agent_id}-${action.platform}-${action.action}-${action.timestamp || ''}`
         if (!existingIds.has(id)) {
           this.actions.push(action)
           existingIds.add(id)
@@ -341,14 +345,16 @@ export default {
       const svgEl = this.$refs.chart
       if (!container || !svgEl || this.priceHistory.length < 1) return
 
-      const width = container.clientWidth
+      const width = container.clientWidth || 400
       const height = container.clientHeight || 200
       const margin = { top: 12, right: 16, bottom: 28, left: 40 }
       const innerW = width - margin.left - margin.right
       const innerH = height - margin.top - margin.bottom
+      if (innerW <= 0 || innerH <= 0) return
 
       const svg = d3.select(svgEl)
-      svg.attr('width', width).attr('height', height)
+      svg.attr('viewBox', `0 0 ${width} ${height}`)
+        .attr('preserveAspectRatio', 'xMidYMid meet')
       svg.selectAll('*').remove()
 
       const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`)
@@ -464,10 +470,11 @@ export default {
 
 <style scoped>
 .run-view {
-  min-height: 100vh;
+  height: 100vh;
   display: flex;
   flex-direction: column;
   background: var(--background);
+  overflow: hidden;
 }
 
 /* Header */
@@ -572,6 +579,7 @@ export default {
 /* Main Grid */
 .run-grid {
   flex: 1;
+  min-height: 0;
   display: grid;
   grid-template-columns: 1fr 1fr;
   grid-template-rows: 1fr 1fr 1fr;
@@ -795,12 +803,15 @@ export default {
 }
 .chart-container {
   flex: 1;
-  min-height: 180px;
+  min-height: 0;
+  max-height: 100%;
   padding: var(--space-1);
+  overflow: hidden;
 }
 .chart-container svg {
   width: 100%;
   height: 100%;
+  display: block;
 }
 .leaderboard {
   width: 220px;
