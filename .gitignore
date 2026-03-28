@@ -1,0 +1,15 @@
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.db
+backend/uploads/
+backend/data/polymarket_cdfs/
+backend/data/polymarket_history/
+dist/
+.DS_Store
+*.egg-info/
+venv/
+.venv/
+*.log
