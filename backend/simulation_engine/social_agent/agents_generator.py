@@ -52,8 +52,12 @@ def generate_agents(
     """
     agents: List[SocialAgent] = []
 
-    for profile in profiles:
-        agent_id = int(profile.get("user_id", len(agents)))
+    for idx, profile in enumerate(profiles):
+        # user_id may be a UUID string; use sequential integer IDs for the simulation
+        try:
+            agent_id = int(profile.get("user_id", idx))
+        except (ValueError, TypeError):
+            agent_id = idx
 
         # Resolve display name.
         name = (

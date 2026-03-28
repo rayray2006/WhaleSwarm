@@ -88,7 +88,8 @@ class SimulationRunner:
 
         # Build the command.
         python = sys.executable
-        backend_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # __file__ is app/services/simulation_runner.py -> go up 3 levels to backend/
+        backend_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
         cmd = [
             python, "-m", "simulation_engine.run",

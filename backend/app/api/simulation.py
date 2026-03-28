@@ -222,8 +222,11 @@ def stop_simulation():
 @simulation_bp.route("/<simulation_id>/run-status", methods=["GET"])
 def get_run_status(simulation_id):
     simulation_id = _resolve_sim_id(simulation_id)
+    config = _get_config()
+    sm = SimulationManager(config)
+    sim_dir = sm.get_sim_dir(simulation_id)
     from app.services.simulation_runner import SimulationRunner
-    state = SimulationRunner.get_run_state(simulation_id)
+    state = SimulationRunner.get_run_state(simulation_id, sim_dir)
     if not state:
         return jsonify({"error": "No run state found"}), 404
     return jsonify(state)
