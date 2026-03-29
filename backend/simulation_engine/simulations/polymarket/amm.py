@@ -15,7 +15,9 @@ from dataclasses import dataclass
 
 
 # Maximum fraction of the smaller reserve that a single trade may consume.
-MAX_TRADE_FRACTION = 0.02
+# 10% allows meaningful trades while still preventing a single agent from
+# moving the price by more than ~20% in one action.
+MAX_TRADE_FRACTION = 0.10
 
 
 @dataclass(frozen=True)

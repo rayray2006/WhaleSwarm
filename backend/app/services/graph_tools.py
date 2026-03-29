@@ -251,3 +251,270 @@ class GraphToolsService:
             f"What are the key entities related to: {query}",
             f"What relationships and dynamics are relevant to: {query}",
         ]
+
+    # ------------------------------------------------------------------
+    # Graph structure analysis
+    # ------------------------------------------------------------------
+
+    def analyze_graph_structure(self, graph_id: str) -> Dict[str, Any]:
+        """Compute structural metrics: degree centrality, clusters, bridges."""
+        entities = self.storage.get_all_entities(graph_id)
+        if not entities:
+            return {"entity_count": 0, "hubs": [], "bridges": [], "clusters": []}
+
+        degree_map: Dict[str, int] = {}
+        edge_list: List[tuple] = []
+
+        for ent in entities:
+            edges = self.storage.get_entity_edges(ent["uuid"], graph_id)
+            degree_map[ent["name"]] = len(edges)
+            for edge in edges:
+                other = edge.get("other_name", "")
+                if other:
+                    edge_list.append((ent["name"], other))
+
+        sorted_by_degree = sorted(degree_map.items(), key=lambda x: x[1], reverse=True)
+        hubs = [{"name": n, "connections": d} for n, d in sorted_by_degree[:10]]
+
+        neighbors: Dict[str, set] = {}
+        for a, b in edge_list:
+            neighbors.setdefault(a, set()).add(b)
+            neighbors.setdefault(b, set()).add(a)
+
+        bridges = []
+        for name, conns in sorted_by_degree:
+            if conns < 2:
+                continue
+            nbrs = neighbors.get(name, set())
+            connected_pairs = 0
+            total_pairs = 0
+            nbr_list = list(nbrs)
+            for i in range(len(nbr_list)):
+                for j in range(i + 1, len(nbr_list)):
+                    total_pairs += 1
+                    if nbr_list[j] in neighbors.get(nbr_list[i], set()):
+                        connected_pairs += 1
+            if total_pairs > 0 and connected_pairs / total_pairs < 0.3:
+                bridges.append({"name": name, "connections": conns})
+            if len(bridges) >= 5:
+                break
+
+        return {
+            "entity_count": len(entities),
+            "hubs": hubs,
+            "bridges": bridges,
+        }
+
+    # ------------------------------------------------------------------
+    # Causal path finder
+    # ------------------------------------------------------------------
+
+    def find_causal_path(
+        self, source_name: str, target_name: str, graph_id: str, max_depth: int = 4,
+    ) -> List[str]:
+        """Find the shortest relationship path between two named entities."""
+        entities = self.storage.get_all_entities(graph_id)
+        name_to_uuid = {e["name"].lower(): e["uuid"] for e in entities}
+        uuid_to_name = {e["uuid"]: e["name"] for e in entities}
+
+        src_uuid = name_to_uuid.get(source_name.lower())
+        tgt_uuid = name_to_uuid.get(target_name.lower())
+        if not src_uuid or not tgt_uuid:
+            return []
+
+        from collections import deque
+        visited = {src_uuid}
+        queue = deque([(src_uuid, [])])
+
+        while queue:
+            current, path = queue.popleft()
+            if len(path) >= max_depth:
+                continue
+
+            edges = self.storage.get_entity_edges(current, graph_id)
+            for edge in edges:
+                other_uuid = edge.get("target") if edge.get("source") == current else edge.get("source")
+                if not other_uuid or other_uuid in visited:
+                    continue
+
+                rel = edge.get("name", "related_to")
+                fact = edge.get("fact", "")
+                cur_name = uuid_to_name.get(current, "?")
+                other_name = uuid_to_name.get(other_uuid, "?")
+                step = f"{cur_name} --[{rel}]--> {other_name}"
+                if fact:
+                    step += f" ({fact})"
+                new_path = path + [step]
+
+                if other_uuid == tgt_uuid:
+                    return new_path
+
+                visited.add(other_uuid)
+                queue.append((other_uuid, new_path))
+
+        return []
+
+    # ------------------------------------------------------------------
+    # Contradiction detector
+    # ------------------------------------------------------------------
+
+    def detect_contradictions(self, graph_id: str) -> List[Dict[str, Any]]:
+        """Find entity pairs connected by edges with opposing sentiments."""
+        entities = self.storage.get_all_entities(graph_id)
+        positive_rels = {"supports", "allies_with", "endorses", "funds", "collaborates_with", "assists"}
+        negative_rels = {"opposes", "conflicts_with", "sanctions", "attacks", "criticizes", "blocks"}
+
+        pair_rels: Dict[tuple, List[Dict]] = {}
+        for ent in entities:
+            edges = self.storage.get_entity_edges(ent["uuid"], graph_id)
+            for edge in edges:
+                other = edge.get("other_name", "")
+                if not other:
+                    continue
+                key = tuple(sorted([ent["name"], other]))
+                pair_rels.setdefault(key, []).append({
+                    "type": edge.get("name", ""),
+                    "fact": edge.get("fact", ""),
+                    "source": ent["name"],
+                    "target": other,
+                })
+
+        contradictions = []
+        for (a, b), rels in pair_rels.items():
+            rel_types = {r["type"].lower() for r in rels}
+            has_positive = bool(rel_types & positive_rels)
+            has_negative = bool(rel_types & negative_rels)
+            if has_positive and has_negative:
+                contradictions.append({
+                    "entity_a": a,
+                    "entity_b": b,
+                    "relationships": rels,
+                })
+
+        return contradictions
+
+    # ------------------------------------------------------------------
+    # Simulation feed query
+    # ------------------------------------------------------------------
+
+    def query_simulation_feed(
+        self,
+        sim_dir: str,
+        platform: str = None,
+        round_num: int = None,
+        keyword: str = None,
+        limit: int = 50,
+    ) -> Dict[str, Any]:
+        """Read and filter simulation actions from the action log."""
+        import json as _json
+        import os
+
+        actions_path = os.path.join(sim_dir, "actions.jsonl")
+        if not os.path.exists(actions_path):
+            return {"actions": [], "counts": {}}
+
+        actions = []
+        counts: Dict[str, int] = {}
+        with open(actions_path) as f:
+            for line in f:
+                try:
+                    a = _json.loads(line)
+                except _json.JSONDecodeError:
+                    continue
+                if a.get("type") != "agent_action":
+                    continue
+                if platform and a.get("platform") != platform:
+                    continue
+                if round_num is not None and a.get("_round") != round_num:
+                    continue
+
+                act_name = a.get("action", "unknown")
+                counts[act_name] = counts.get(act_name, 0) + 1
+
+                content = ""
+                args = a.get("arguments", {})
+                content = args.get("content", args.get("text", ""))
+
+                if keyword and keyword.lower() not in (content or "").lower():
+                    continue
+
+                actions.append({
+                    "round": a.get("_round"),
+                    "platform": a.get("platform"),
+                    "agent": a.get("agent_name", ""),
+                    "action": act_name,
+                    "content": (content or "")[:300],
+                })
+
+        return {"actions": actions[-limit:], "counts": counts, "total": len(actions)}
+
+    # ------------------------------------------------------------------
+    # Belief trajectory analysis
+    # ------------------------------------------------------------------
+
+    def analyze_belief_trajectories(
+        self, sim_dir: str,
+    ) -> Dict[str, Any]:
+        """Analyze how agent beliefs evolved across rounds from action data."""
+        import json as _json
+        import os
+
+        actions_path = os.path.join(sim_dir, "actions.jsonl")
+        if not os.path.exists(actions_path):
+            return {"rounds": 0, "agents": []}
+
+        round_actions: Dict[int, Dict[str, List[str]]] = {}
+        with open(actions_path) as f:
+            for line in f:
+                try:
+                    a = _json.loads(line)
+                except _json.JSONDecodeError:
+                    continue
+                if a.get("type") != "agent_action":
+                    continue
+                rn = a.get("_round", 0)
+                name = a.get("agent_name", "unknown")
+                act = a.get("action", "")
+                round_actions.setdefault(rn, {}).setdefault(name, []).append(act)
+
+        agent_summaries = {}
+        for rn in sorted(round_actions.keys()):
+            for name, acts in round_actions[rn].items():
+                if name not in agent_summaries:
+                    agent_summaries[name] = {"name": name, "rounds_active": 0, "actions": {}}
+                agent_summaries[name]["rounds_active"] += 1
+                for act in acts:
+                    agent_summaries[name]["actions"][act] = agent_summaries[name]["actions"].get(act, 0) + 1
+
+        polymarket_path = os.path.join(sim_dir, "polymarket.db")
+        price_trajectory = []
+        if os.path.exists(polymarket_path):
+            import sqlite3
+            conn = sqlite3.connect(polymarket_path)
+            conn.row_factory = sqlite3.Row
+            markets = conn.execute(
+                "SELECT reserve_a, reserve_b FROM market WHERE resolved = 0"
+            ).fetchall()
+            if markets:
+                m = markets[0]
+                total = (m["reserve_a"] or 0) + (m["reserve_b"] or 0)
+                if total > 0:
+                    price_trajectory.append({
+                        "yes_price": round(m["reserve_b"] / total, 4),
+                    })
+
+            trades = conn.execute(
+                "SELECT side, outcome, COUNT(*) as cnt, SUM(cost) as vol FROM trade GROUP BY side, outcome"
+            ).fetchall()
+            trade_summary = [dict(t) for t in trades]
+            conn.close()
+        else:
+            trade_summary = []
+
+        return {
+            "rounds": len(round_actions),
+            "agent_count": len(agent_summaries),
+            "agents": sorted(agent_summaries.values(), key=lambda x: x["rounds_active"], reverse=True)[:20],
+            "price_trajectory": price_trajectory,
+            "trade_summary": trade_summary,
+        }

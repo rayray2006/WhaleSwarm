@@ -191,8 +191,8 @@ def get_run_state_from_actions(
     if status == "running" and rounds_completed >= max_rounds:
         status = "completed"
 
-    # Recent actions (last 20).
-    recent = agent_actions[-20:] if agent_actions else []
+    # Return all agent actions so the frontend has the full history.
+    recent = agent_actions
 
     return {
         "current_round": current_round,
@@ -242,7 +242,7 @@ def get_posts_from_db(
     round_num: Optional[int] = None,
     limit: int = 50,
 ) -> List[Dict[str, Any]]:
-    """Read posts from a platform's SQLite database.
+    """Read posts (with comments) from a platform's SQLite database.
 
     Args:
         sim_dir: Path to the simulation directory.
@@ -253,7 +253,8 @@ def get_posts_from_db(
 
     Returns:
         List of post dicts with ``post_id``, ``user_id``, ``user_name``,
-        ``content``, ``created_at``, ``num_likes``, ``num_dislikes``.
+        ``content``, ``created_at``, ``num_likes``, ``num_dislikes``,
+        and ``comments`` (list of comment dicts).
     """
     db_path = os.path.join(sim_dir, f"{platform}.db")
     if not os.path.exists(db_path):
@@ -264,6 +265,8 @@ def get_posts_from_db(
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
+        # Read uncommitted WAL data from the simulation subprocess.
+        conn.execute("PRAGMA read_uncommitted = ON")
 
         # Check which tables exist.
         tables = {
@@ -288,6 +291,8 @@ def get_posts_from_db(
             query += "ORDER BY p.post_id DESC LIMIT ?"
             rows = conn.execute(query, (limit,)).fetchall()
 
+            has_comments = "comment" in tables
+
             for row in rows:
                 post = {
                     "post_id": row["post_id"],
@@ -296,10 +301,35 @@ def get_posts_from_db(
                     "created_at": row["created_at"],
                     "num_likes": row["num_likes"],
                     "num_dislikes": row["num_dislikes"],
+                    "comments": [],
                 }
                 if "user" in tables:
                     post["user_name"] = row["user_name"] if "user_name" in row.keys() else ""
                     post["name"] = row["name"] if "name" in row.keys() else ""
+
+                # Fetch comments for this post.
+                if has_comments:
+                    comment_query = (
+                        "SELECT c.comment_id, c.content, c.user_id"
+                    )
+                    if "user" in tables:
+                        comment_query += ", u.user_name, u.name "
+                        comment_query += "FROM comment c LEFT JOIN user u ON c.user_id = u.user_id "
+                    else:
+                        comment_query += " FROM comment c "
+                    comment_query += "WHERE c.post_id = ? ORDER BY c.comment_id"
+                    comment_rows = conn.execute(comment_query, (row["post_id"],)).fetchall()
+                    for cr in comment_rows:
+                        comment = {
+                            "comment_id": cr["comment_id"],
+                            "content": cr["content"],
+                            "user_id": cr["user_id"],
+                        }
+                        if "user" in tables:
+                            comment["user_name"] = cr["user_name"] if "user_name" in cr.keys() else ""
+                            comment["name"] = cr["name"] if "name" in cr.keys() else ""
+                        post["comments"].append(comment)
+
                 posts.append(post)
 
         elif platform == "polymarket" and "market" in tables:

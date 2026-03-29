@@ -229,8 +229,11 @@ class PolymarketPlatform(BasePlatform):
 
         # Set up AMM reserves so that:
         #   price_a = reserve_b / (reserve_a + reserve_b) = initial_prob
-        # With a liquidity constant k = 10000 (reserves ~ 100 each at 50/50):
-        k = 10000.0
+        # Liquidity should be large enough relative to agent capital so
+        # that individual trades move the price meaningfully but don't
+        # get rejected by the trade-size cap.  With N agents each
+        # holding ~$1000 and a 10% cap, reserves of ~5000 work well.
+        k = 25_000_000.0  # reserves ~5000 each at 50/50
         # new_reserve_b = sqrt(k * p / (1 - p))
         reserve_b = math.sqrt(k * initial_prob / (1.0 - initial_prob))
         reserve_a = k / reserve_b

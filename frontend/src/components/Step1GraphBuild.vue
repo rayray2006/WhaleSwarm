@@ -16,10 +16,6 @@
             <span v-for="t in ontology.edge_types" :key="t" class="tag">{{ t }}</span>
           </div>
         </div>
-        <div class="section" v-if="ontology.analysis_summary">
-          <div class="section-label">Analysis</div>
-          <p class="analysis">{{ ontology.analysis_summary }}</p>
-        </div>
       </div>
 
       <div v-if="!graphBuilt" class="actions">

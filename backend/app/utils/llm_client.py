@@ -3,7 +3,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 
 from app.config import Config
 
@@ -15,24 +15,37 @@ class LLMClient:
 
     Primary model: used for bulk tasks (NER, profile gen).
     Smart model: used for intelligence-sensitive tasks (ontology, reports).
+
+    Provides both sync methods (complete, complete_json, complete_with_tools)
+    for non-async callers and async methods (acomplete_with_tools) for use
+    inside the simulation event loop.
     """
 
     def __init__(self, config: Config):
         self.config = config
 
-        # Primary client
+        # Sync clients (used by Flask routes, graph builder, etc.)
         self._primary = OpenAI(
             api_key=config.llm_api_key,
             base_url=config.llm_base_url,
         )
         self._primary_model = config.llm_model_name
 
-        # Smart client (may be same as primary)
         self._smart = OpenAI(
             api_key=config.smart_api_key,
             base_url=config.smart_base_url,
         )
         self._smart_model = config.smart_model_name
+
+        # Async clients (used by simulation engine inside asyncio loop)
+        self._async_primary = AsyncOpenAI(
+            api_key=config.llm_api_key,
+            base_url=config.llm_base_url,
+        )
+        self._async_smart = AsyncOpenAI(
+            api_key=config.smart_api_key,
+            base_url=config.smart_base_url,
+        )
 
     def complete(
         self,
@@ -153,11 +166,36 @@ class LLMClient:
         temperature: float = 0.7,
         max_tokens: int = 16384,
     ) -> Dict:
-        """Call LLM with tool definitions and return the full response."""
+        """Call LLM with tool definitions and return the full response (sync)."""
         client = self._smart if smart else self._primary
         model = self._smart_model if smart else self._primary_model
 
         response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            tools=tools,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return response
+
+    async def acomplete_with_tools(
+        self,
+        messages: List[Dict[str, str]],
+        tools: List[Dict],
+        smart: bool = False,
+        temperature: float = 0.7,
+        max_tokens: int = 16384,
+    ) -> Dict:
+        """Call LLM with tool definitions and return the full response (async).
+
+        Use this inside asyncio event loops (e.g. the simulation engine)
+        so that other coroutines and platform message loops are not blocked.
+        """
+        client = self._async_smart if smart else self._async_primary
+        model = self._smart_model if smart else self._primary_model
+
+        response = await client.chat.completions.create(
             model=model,
             messages=messages,
             tools=tools,

@@ -1,8 +1,9 @@
 """Knowledge graph builder: chunks -> parallel NER -> batch Neo4j insert."""
+import json
 import logging
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from app.config import Config
 from app.models.task import TaskManager
@@ -25,6 +26,7 @@ class GraphBuilder:
     ):
         self.config = config
         self.storage = storage
+        self.llm = llm_client
         self.ner = NERExtractor(llm_client)
         self.embedding = embedding_service
 
@@ -35,11 +37,17 @@ class GraphBuilder:
         graph_name: str,
         ontology: Dict,
         task_id: str = None,
-        chunk_size: int = 500,
-        chunk_overlap: int = 50,
+        chunk_size: int = 1000,
+        chunk_overlap: int = 150,
         batch_size: int = 5,
+        market_question: Optional[str] = None,
     ):
-        """Build knowledge graph from text. Runs in a background thread."""
+        """Build knowledge graph from text. Runs in a background thread.
+
+        Args:
+            market_question: If provided, entities are filtered by relevance
+                to this prediction market question after NER extraction.
+        """
         entity_types = ontology.get("entity_types", [])
         edge_types = ontology.get("edge_types", [])
 
@@ -83,15 +91,24 @@ class GraphBuilder:
                                 "name": name,
                                 "type": ent.get("type", "Entity"),
                                 "summary": ent.get("summary", ""),
+                                "_summary_parts": [ent.get("summary", "")],
                                 "attributes": str(ent.get("attributes", {})),
                                 "embedding": None,
                             }
                         else:
-                            # Merge: append to summary if new info
+                            # Merge: collect unique summary sentences,
+                            # capped at 5 to prevent bloat.
                             existing = all_entities[name]
-                            new_summary = ent.get("summary", "")
-                            if new_summary and new_summary not in existing["summary"]:
-                                existing["summary"] += f" {new_summary}"
+                            new_summary = ent.get("summary", "").strip()
+                            parts = existing.get("_summary_parts", [])
+                            if (
+                                new_summary
+                                and len(parts) < 5
+                                and new_summary not in parts
+                            ):
+                                parts.append(new_summary)
+                                existing["_summary_parts"] = parts
+                                existing["summary"] = " ".join(parts)
 
                     # Collect edges
                     for rel in relations:
@@ -112,6 +129,24 @@ class GraphBuilder:
                     TaskManager.update(task_id, progress=progress)
 
         logger.info(f"NER complete: {len(all_entities)} entities, {len(all_edges)} edges")
+
+        # Relevance filter: remove entities that don't directly influence
+        # the market outcome.
+        if market_question and len(all_entities) > 5:
+            all_entities = self._filter_by_relevance(
+                all_entities, market_question,
+            )
+            # Also prune edges whose source/target was removed.
+            surviving_names = set(all_entities.keys())
+            all_edges = [
+                e for e in all_edges
+                if e["source_name"] in surviving_names
+                and e["target_name"] in surviving_names
+            ]
+            logger.info(
+                f"After relevance filter: {len(all_entities)} entities, "
+                f"{len(all_edges)} edges"
+            )
 
         if task_id:
             TaskManager.update(task_id, progress=80)
@@ -140,20 +175,53 @@ class GraphBuilder:
         # Batch insert entities into Neo4j
         self.storage.add_entities_batch(entity_list, graph_id)
 
-        # Resolve edge references (name -> uuid) and insert
+        # Resolve edge references with fuzzy name matching.
         name_to_uuid = {e["name"]: e["uuid"] for e in entity_list}
+        name_lower_map = {e["name"].lower(): e["name"] for e in entity_list}
+
+        def _resolve_name(raw: str) -> Optional[str]:
+            if raw in name_to_uuid:
+                return raw
+            canonical = name_lower_map.get(raw.lower())
+            if canonical:
+                return canonical
+            cleaned = raw.replace(".", "").replace("'", "").strip()
+            canonical = name_lower_map.get(cleaned.lower())
+            if canonical:
+                return canonical
+            for entity_name in name_to_uuid:
+                if (raw.lower() in entity_name.lower()
+                        or entity_name.lower() in raw.lower()):
+                    return entity_name
+            return None
+
         resolved_edges = []
+        seen_pairs: set = set()
         for edge in all_edges:
-            src_uuid = name_to_uuid.get(edge["source_name"])
-            tgt_uuid = name_to_uuid.get(edge["target_name"])
-            if src_uuid and tgt_uuid:
-                resolved_edges.append({
-                    "uuid": edge["uuid"],
-                    "name": edge["name"],
-                    "fact": edge["fact"],
-                    "source_node_uuid": src_uuid,
-                    "target_node_uuid": tgt_uuid,
-                })
+            src = _resolve_name(edge["source_name"])
+            tgt = _resolve_name(edge["target_name"])
+            if src and tgt and src != tgt:
+                pair_key = (name_to_uuid[src], name_to_uuid[tgt], edge["name"])
+                if pair_key not in seen_pairs:
+                    seen_pairs.add(pair_key)
+                    resolved_edges.append({
+                        "uuid": edge["uuid"],
+                        "name": edge["name"],
+                        "fact": edge["fact"],
+                        "source_node_uuid": name_to_uuid[src],
+                        "target_node_uuid": name_to_uuid[tgt],
+                    })
+
+        # Infer missing relationships between entities that were never
+        # mentioned together in the same chunk.
+        if len(entity_list) <= 60:
+            inferred = self._infer_missing_edges(entity_list, resolved_edges)
+            resolved_edges.extend(inferred)
+
+        logger.info(
+            "Edge resolution: %d from NER, %d after dedup+inference",
+            len(all_edges), len(resolved_edges),
+        )
 
         self.storage.add_edges_batch(resolved_edges, graph_id)
 
@@ -178,8 +246,158 @@ class GraphBuilder:
             "edge_count": len(resolved_edges),
         }
 
+    def _infer_missing_edges(
+        self,
+        entity_list: List[Dict],
+        existing_edges: List[Dict],
+    ) -> List[Dict]:
+        """Use the LLM to infer relationships between entities that were
+        never co-mentioned in the same text chunk."""
+        existing_pairs = set()
+        for e in existing_edges:
+            existing_pairs.add((e["source_node_uuid"], e["target_node_uuid"]))
+            existing_pairs.add((e["target_node_uuid"], e["source_node_uuid"]))
+
+        entity_names = [f"{e['name']} ({e.get('type', 'Entity')})" for e in entity_list]
+        entity_block = "\n".join(f"  {i+1}. {n}" for i, n in enumerate(entity_names))
+
+        messages = [
+            {"role": "system", "content": (
+                "You are a knowledge graph analyst. Given a list of entities, "
+                "identify pairs that clearly have a direct real-world "
+                "relationship but are NOT yet connected. Only include "
+                "relationships you are confident about. Return JSON."
+            )},
+            {"role": "user", "content": (
+                f"These entities exist in a knowledge graph:\n\n{entity_block}\n\n"
+                f"Identify missing relationships. For each, provide:\n"
+                f"- source: exact entity name from the list\n"
+                f"- target: exact entity name from the list\n"
+                f"- type: relationship type (e.g., PART_OF, ADVISES, WORKS_FOR, "
+                f"REPRESENTS, OPPOSES, OVERSEES, FUNDS)\n"
+                f"- fact: one-sentence description of the relationship\n\n"
+                f'Return: {{"relations": [{{"source": "...", "target": "...", '
+                f'"type": "...", "fact": "..."}}]}}'
+            )},
+        ]
+
+        try:
+            result = self.llm.complete_json(
+                messages, smart=False, temperature=0.3, max_tokens=4096,
+            )
+            if isinstance(result, list):
+                result = result[0] if result else {}
+            relations = result.get("relations", []) if isinstance(result, dict) else []
+        except Exception:
+            logger.debug("Edge inference failed, skipping")
+            return []
+
+        name_to_uuid = {e["name"]: e["uuid"] for e in entity_list}
+        name_lower = {e["name"].lower(): e["name"] for e in entity_list}
+
+        inferred = []
+        for rel in relations:
+            src_raw = rel.get("source", "")
+            tgt_raw = rel.get("target", "")
+            src = name_to_uuid.get(src_raw) or name_to_uuid.get(name_lower.get(src_raw.lower(), ""))
+            tgt = name_to_uuid.get(tgt_raw) or name_to_uuid.get(name_lower.get(tgt_raw.lower(), ""))
+
+            if not src or not tgt or src == tgt:
+                continue
+            if (src, tgt) in existing_pairs:
+                continue
+
+            existing_pairs.add((src, tgt))
+            existing_pairs.add((tgt, src))
+            inferred.append({
+                "uuid": str(uuid.uuid4()),
+                "name": rel.get("type", "RELATED_TO"),
+                "fact": rel.get("fact", ""),
+                "source_node_uuid": src,
+                "target_node_uuid": tgt,
+            })
+
+        logger.info("Inferred %d missing edges", len(inferred))
+        return inferred
+
     def _process_chunk(
         self, chunk: str, entity_types: List[str], edge_types: List[str]
     ) -> Dict:
         """Process a single chunk: NER extraction."""
         return self.ner.extract(chunk, entity_types, edge_types)
+
+    def _filter_by_relevance(
+        self,
+        entities: Dict[str, Dict],
+        market_question: str,
+    ) -> Dict[str, Dict]:
+        """Score entities by relevance to the market question and remove
+        low-relevance ones.  One LLM call with all entity names."""
+        entity_names = list(entities.keys())
+
+        # Batch into groups of 40 to stay within token limits
+        batch_size = 40
+        keep_names: set = set()
+
+        for i in range(0, len(entity_names), batch_size):
+            batch = entity_names[i : i + batch_size]
+            numbered = "\n".join(f"{j+1}. {name}" for j, name in enumerate(batch))
+
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a prediction-market analyst. Given a market "
+                        "question and a list of entities, rate each entity's "
+                        "relevance to the market outcome on a scale of 1-5:\n"
+                        "  5 = direct decision maker or primary factor\n"
+                        "  4 = significant influence on outcome\n"
+                        "  3 = moderate relevance\n"
+                        "  2 = peripheral / background context only\n"
+                        "  1 = irrelevant to this prediction\n\n"
+                        "Return JSON: a list of objects with "
+                        '{"name": "...", "score": N} for each entity. '
+                        "Keep ONLY entities scoring 3 or above."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Market question: {market_question}\n\n"
+                        f"Entities to evaluate:\n{numbered}"
+                    ),
+                },
+            ]
+
+            try:
+                result = self.llm.complete_json(
+                    messages, smart=False, temperature=0.2, max_tokens=4096,
+                )
+                if isinstance(result, dict):
+                    result = result.get("entities", result.get("results", []))
+                if isinstance(result, list):
+                    for item in result:
+                        if isinstance(item, dict):
+                            name = item.get("name", "")
+                            score = item.get("score", 0)
+                            if score >= 3 and name in entities:
+                                keep_names.add(name)
+                            elif score >= 3:
+                                # Fuzzy match: LLM might return slightly different name
+                                for ename in batch:
+                                    if ename.lower() == name.lower():
+                                        keep_names.add(ename)
+                                        break
+            except Exception:
+                logger.exception("Relevance filter batch failed, keeping all")
+                keep_names.update(batch)
+
+        if not keep_names:
+            logger.warning("Relevance filter removed all entities, keeping originals")
+            return entities
+
+        logger.info(
+            "Relevance filter: %d/%d entities kept",
+            len(keep_names), len(entities),
+        )
+        return {name: ent for name, ent in entities.items() if name in keep_names}

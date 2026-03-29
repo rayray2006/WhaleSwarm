@@ -86,6 +86,20 @@ class SimulationRunner:
         # Ensure the simulation directory has the necessary files.
         os.makedirs(sim_dir, exist_ok=True)
 
+        # Clean output from any previous run so the UI doesn't show stale data.
+        for old_file in [
+            "actions.jsonl", "sim_status.txt", "sim.pid", "simulation.log",
+            "twitter.db", "twitter.db-shm", "twitter.db-wal",
+            "reddit.db", "reddit.db-shm", "reddit.db-wal",
+            "polymarket.db", "polymarket.db-shm", "polymarket.db-wal",
+        ]:
+            old_path = os.path.join(sim_dir, old_file)
+            if os.path.exists(old_path):
+                try:
+                    os.remove(old_path)
+                except OSError:
+                    pass
+
         # Build the command.
         python = sys.executable
         # __file__ is app/services/simulation_runner.py -> go up 3 levels to backend/

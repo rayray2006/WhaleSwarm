@@ -1,6 +1,7 @@
 <template>
   <div id="whale-app">
     <router-view />
+    <div class="bottom-stripe"></div>
   </div>
 </template>
 
@@ -63,6 +64,8 @@ body {
 
 #whale-app {
   min-height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Scrollbar */
@@ -103,14 +106,16 @@ body {
 
 /* Utility classes */
 .warning-stripes {
-  height: 4px;
-  background: repeating-linear-gradient(
-    45deg,
-    var(--primary),
-    var(--primary) 5px,
-    transparent 5px,
-    transparent 20px
-  );
+  height: 3px;
+  background: var(--primary);
+  opacity: 0.3;
+  flex-shrink: 0;
+}
+.bottom-stripe {
+  height: 3px;
+  background: var(--primary);
+  opacity: 0.3;
+  flex-shrink: 0;
 }
 
 .btn {

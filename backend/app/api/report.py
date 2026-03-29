@@ -36,6 +36,25 @@ def _get_storage():
     return current_app.extensions["neo4j_storage"]
 
 
+def _resolve_sim_id(candidate_id: str) -> str:
+    """Resolve a simulation_id or project_id to an actual simulation_id."""
+    config = _get_config()
+    sm = SimulationManager(config)
+    if sm.load(candidate_id):
+        return candidate_id
+    # Search by project_id (newest first)
+    sims_dir = os.path.join(config.upload_dir, "simulations")
+    if os.path.exists(sims_dir):
+        for sid in sorted(os.listdir(sims_dir), reverse=True):
+            sim_file = os.path.join(sims_dir, sid, "simulation.json")
+            if os.path.exists(sim_file):
+                with open(sim_file) as f:
+                    sdata = json.load(f)
+                if sdata.get("project_id") == candidate_id:
+                    return sid
+    return candidate_id
+
+
 def _build_report_agent():
     """Construct a ReportAgent with current app dependencies."""
     from app.services.report_agent import ReportAgent
@@ -68,6 +87,9 @@ def generate_report():
     simulation_id = data.get("simulation_id")
     if not simulation_id:
         return jsonify({"error": "simulation_id is required"}), 400
+
+    # Resolve: the ID may be a project_id rather than a simulation_id
+    simulation_id = _resolve_sim_id(simulation_id)
 
     config = _get_config()
 
@@ -172,6 +194,9 @@ def get_report_status(report_id):
         progress: int  (0-100)
         error: str | null
     """
+    # Resolve ID (may be project_id)
+    report_id = _resolve_sim_id(report_id)
+
     # Find the task for this report
     meta = _report_meta.get(report_id)
     if meta and meta.get("task_id"):
@@ -218,6 +243,7 @@ def get_report(report_id):
         markdown: str
         simulation_id: str
     """
+    report_id = _resolve_sim_id(report_id)
     config = _get_config()
     report_path = os.path.join(
         config.upload_dir, "reports", report_id, "report.md"

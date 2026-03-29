@@ -19,6 +19,9 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from simulation_engine.clock.clock import Clock
+from simulation_engine.environment.cross_platform_log import CrossPlatformLog
+from simulation_engine.environment.market_media_bridge import MarketMediaBridge
+from simulation_engine.environment.round_memory import RoundMemory
 from simulation_engine.simulations.base import (
     BaseAction,
     BaseEnvironment,
@@ -41,68 +44,8 @@ from simulation_engine.social_platform.platform import Platform as SocialPlatfor
 
 logger = logging.getLogger(__name__)
 
-# ======================================================================
-# Constants
-# ======================================================================
-
 _CROSS_PLATFORM_MARKER = "\n\n# CROSS-PLATFORM CONTEXT"
 _BELIEF_STATE_MARKER = "\n\n# YOUR CURRENT BELIEFS AND STANCE"
-
-# RoundMemory: how many recent rounds get full detail before summarisation.
-_FULL_DETAIL_WINDOW = 2
-_MAX_SUMMARY_ROUNDS = 10
-
-
-# ======================================================================
-# RoundMemory -- sliding window of round context
-# ======================================================================
-
-@dataclass
-class RoundMemory:
-    """Sliding window of round-level summaries.
-
-    The most recent ``_FULL_DETAIL_WINDOW`` rounds are kept in full detail.
-    Older rounds are compressed into a short summary.
-    """
-
-    entries: List[Dict[str, Any]] = field(default_factory=list)
-
-    def record(self, round_num: int, summary: str, detail: str) -> None:
-        """Record the output of one round."""
-        self.entries.append({
-            "round": round_num,
-            "summary": summary,
-            "detail": detail,
-            "timestamp": datetime.utcnow().isoformat(),
-        })
-
-    def build_context(self) -> str:
-        """Return a combined context string with sliding-window compression."""
-        if not self.entries:
-            return ""
-
-        parts: List[str] = []
-
-        # Older rounds: summarised.
-        older = self.entries[:-_FULL_DETAIL_WINDOW] if len(self.entries) > _FULL_DETAIL_WINDOW else []
-        recent = self.entries[-_FULL_DETAIL_WINDOW:]
-
-        if older:
-            # Keep only the last _MAX_SUMMARY_ROUNDS of older entries.
-            older = older[-_MAX_SUMMARY_ROUNDS:]
-            summary_lines = [
-                f"  Round {e['round']}: {e['summary']}" for e in older
-            ]
-            parts.append(
-                "Previous rounds (summarised):\n" + "\n".join(summary_lines)
-            )
-
-        for entry in recent:
-            parts.append(
-                f"--- Round {entry['round']} (detail) ---\n{entry['detail']}"
-            )
-
-        return "\n\n".join(parts)
 
 
 # ======================================================================
@@ -152,44 +95,101 @@ class OasisEnv:
         self.llm_client = llm_client
         self.topics = topics or []
 
-        # Round bookkeeping.
         self.current_round: int = 0
         self.max_rounds: int = int(sim_config.get("max_rounds", 10))
-        self.round_memory = RoundMemory()
 
-        # Divergence tracker (Polymarket AMM vs real CLOB price).
+        llm_complete = llm_client.complete if llm_client else None
+        self.round_memory = RoundMemory(llm_complete_fn=llm_complete)
+        self.bridge = MarketMediaBridge()
+        self.cross_log = CrossPlatformLog()
+
         poly_bundle = self.platforms.get("polymarket")
         if poly_bundle and isinstance(poly_bundle.platform, PolymarketPlatform):
             self.divergence_tracker: DivergenceTracker = poly_bundle.platform.divergence_tracker
         else:
             self.divergence_tracker = DivergenceTracker()
 
-        # Time config from simulation_config.
         self.time_config: Dict[str, Any] = sim_config.get("time", {})
         self.event_config: Dict[str, Any] = sim_config.get("events", {})
         self.agent_configs: Dict[str, Any] = sim_config.get("agents", {})
 
-        # Actions log.
         self._actions_path = os.path.join(sim_dir, "actions.jsonl")
+        self._platform_logs: Dict[str, str] = {}
+        for pname in platforms:
+            plog = os.path.join(sim_dir, f"{pname}_actions.jsonl")
+            self._platform_logs[pname] = plog
 
-        # Real-price fetcher (injected externally or None).
         self.real_price_fetcher: Optional[Any] = None
 
         self._stopped = False
+        self._paused = False
+        self._pause_event: Optional[asyncio.Event] = None
 
     # ------------------------------------------------------------------
     # Action logging
     # ------------------------------------------------------------------
 
     def _log_action(self, action: Dict[str, Any]) -> None:
-        """Append one action record to actions.jsonl."""
+        """Append one action record to the unified and per-platform logs."""
         action["_ts"] = time.time()
         action["_round"] = self.current_round
+
+        # Enrich agent_action entries with human-readable context.
+        if action.get("type") == "agent_action":
+            self._enrich_action(action)
+
+        line = json.dumps(action, default=str) + "\n"
         try:
             with open(self._actions_path, "a") as f:
-                f.write(json.dumps(action, default=str) + "\n")
+                f.write(line)
         except Exception:
             logger.exception("Failed to write action log")
+
+        # Per-platform log.
+        platform = action.get("platform")
+        if platform and platform in self._platform_logs:
+            try:
+                with open(self._platform_logs[platform], "a") as f:
+                    f.write(line)
+            except Exception:
+                pass
+
+        # Feed cross-platform log for agent awareness.
+        if action.get("type") == "agent_action":
+            agent_id = action.get("agent_id")
+            if agent_id is not None and platform:
+                self.cross_log.record(agent_id, platform, action)
+
+    def _enrich_action(self, action: Dict[str, Any]) -> None:
+        """Attach human-readable context to an action (post content for likes, etc.)."""
+        act = action.get("action", "")
+        args = action.get("arguments", {})
+        platform = action.get("platform")
+        bundle = self.platforms.get(platform) if platform else None
+        if bundle is None:
+            return
+
+        try:
+            if act in ("like_post", "dislike_post", "repost") and "post_id" in args:
+                row = bundle.db.fetchone(
+                    "SELECT p.content, u.user_name FROM post p "
+                    "LEFT JOIN user u ON p.user_id = u.user_id "
+                    "WHERE p.post_id = ?",
+                    (args["post_id"],),
+                )
+                if row:
+                    action["_post_content"] = (row["content"] or "")[:150]
+                    action["_post_author"] = row["user_name"] or ""
+
+            elif act == "follow" and "followee_id" in args:
+                row = bundle.db.fetchone(
+                    "SELECT user_name, name FROM user WHERE user_id = ?",
+                    (args["followee_id"],),
+                )
+                if row:
+                    action["_target_name"] = row["user_name"] or row["name"] or ""
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Cross-platform context injection
@@ -400,7 +400,8 @@ class OasisEnv:
         try:
             if asyncio.iscoroutinefunction(self.real_price_fetcher):
                 return await self.real_price_fetcher(market_id)
-            return self.real_price_fetcher(market_id)
+            # Run sync HTTP fetcher in a thread to avoid blocking the event loop.
+            return await asyncio.to_thread(self.real_price_fetcher, market_id)
         except Exception:
             logger.warning("Failed to fetch real price for market %d", market_id, exc_info=True)
             return None
@@ -444,42 +445,57 @@ class OasisEnv:
     # ------------------------------------------------------------------
 
     def _inject_scheduled_events(self, round_num: int) -> None:
-        """Inject any scheduled events for this round."""
+        """Inject any scheduled events for this round.
+
+        Supports two trigger modes:
+        - ``"round": N`` — fires at exact round N (preferred for fictional events)
+        - ``"hour": H``  — fires when simulated hour equals H (legacy)
+        """
         events = self.event_config.get("scheduled_events", [])
         minutes_per_round = self.time_config.get("minutes_per_round", 30)
 
         for event in events:
-            trigger_hour = event.get("hour")
-            if trigger_hour is None:
+            # Round-based trigger (preferred)
+            trigger_round = event.get("round")
+            if trigger_round is not None:
+                if round_num != trigger_round:
+                    continue
+            else:
+                # Hour-based trigger (legacy)
+                trigger_hour = event.get("hour")
+                if trigger_hour is None:
+                    continue
+                sim_minute = round_num * minutes_per_round
+                sim_hour = sim_minute // 60
+                if sim_hour != trigger_hour:
+                    continue
+
+            # Support both "description" and "event" keys (config generator uses both)
+            event_text = event.get("description") or event.get("event", "")
+            if not event_text:
                 continue
 
-            # Convert round to simulated hour.
-            sim_minute = round_num * minutes_per_round
-            sim_hour = sim_minute // 60
+            target_platforms = event.get("platforms", list(self.platforms.keys()))
 
-            if sim_hour == trigger_hour:
-                event_text = event.get("description", "")
-                target_platforms = event.get("platforms", list(self.platforms.keys()))
+            logger.info(
+                "Injecting event at round %d: %s", round_num, event_text[:80],
+            )
 
-                logger.info(
-                    "Injecting event at hour %d: %s", sim_hour, event_text[:80],
-                )
+            for pname in target_platforms:
+                bundle = self.platforms.get(pname)
+                if bundle is None:
+                    continue
+                for agent in bundle.agents:
+                    agent.env.set_extra_context(
+                        agent.env.extra_observation_context + f"\n\nBREAKING: {event_text}"
+                    )
 
-                for pname in target_platforms:
-                    bundle = self.platforms.get(pname)
-                    if bundle is None:
-                        continue
-                    for agent in bundle.agents:
-                        agent.env.set_extra_context(
-                            agent.env.extra_observation_context + f"\n\nBREAKING: {event_text}"
-                        )
-
-                self._log_action({
-                    "type": "event_injection",
-                    "hour": sim_hour,
-                    "description": event_text,
-                    "platforms": target_platforms,
-                })
+            self._log_action({
+                "type": "event_injection",
+                "round": round_num,
+                "description": event_text,
+                "platforms": target_platforms,
+            })
 
     # ------------------------------------------------------------------
     # Run a single agent
@@ -562,42 +578,70 @@ class OasisEnv:
             except Exception:
                 logger.debug("No markets to anchor yet")
 
-        # 3. Read latest social-media posts.
+        # 3. Update bridge with latest prices and sentiment.
+        if poly_bundle is not None:
+            self.bridge.update_prices(poly_bundle.db, round_num)
+
         twitter_posts = self._read_recent_posts("twitter", limit=15)
         reddit_posts = self._read_recent_posts("reddit", limit=15)
 
-        # 4. Summarise into social context string.
-        social_context = self._summarise_social_context(twitter_posts, reddit_posts)
+        for pname in ("twitter", "reddit"):
+            bundle = self.platforms.get(pname)
+            if bundle and bundle.belief_states:
+                posts = twitter_posts if pname == "twitter" else reddit_posts
+                self.bridge.update_sentiment(bundle.belief_states, pname, round_num, posts)
 
-        # 5. Inject social context into Polymarket agent observations.
-        if poly_bundle and social_context:
-            for agent in poly_bundle.agents:
-                agent.env.set_extra_context(social_context)
+        # 4. Inject market prompt into social agents, sentiment into polymarket agents.
+        market_prompt = self.bridge.get_market_prompt()
+        sentiment_prompt = self.bridge.get_sentiment_prompt()
 
-        # 6. Read latest Polymarket prices.
-        market_prices = self._read_market_prices()
-        market_context = self._summarise_market_context(market_prices)
-
-        # 7. Inject market prices into Twitter/Reddit agent system messages.
         for pname in ("twitter", "reddit"):
             bundle = self.platforms.get(pname)
             if bundle is None:
                 continue
             for agent in bundle.agents:
-                if market_context:
-                    self.inject_cross_platform_context(agent, market_context)
+                ctx_parts = []
+                if market_prompt:
+                    ctx_parts.append(market_prompt)
+                digest = self.cross_log.get_digest(agent.agent_id, pname)
+                if digest:
+                    ctx_parts.append(digest)
+                if ctx_parts:
+                    self.inject_cross_platform_context(agent, "\n\n".join(ctx_parts))
 
-        # Inject belief states into all agents.
+        if poly_bundle:
+            social_ctx = self._summarise_social_context(twitter_posts, reddit_posts)
+            combined = ""
+            if social_ctx:
+                combined += social_ctx
+            if sentiment_prompt:
+                combined += "\n\n" + sentiment_prompt
+            for agent in poly_bundle.agents:
+                ctx_parts = [combined] if combined else []
+                digest = self.cross_log.get_digest(agent.agent_id, "polymarket")
+                if digest:
+                    ctx_parts.append(digest)
+                agent.env.set_extra_context("\n\n".join(ctx_parts))
+
+        # 5. Inject round memory context into all agents.
+        memory_ctx = self.round_memory.build_context()
+        if memory_ctx:
+            for bundle in self.platforms.values():
+                for agent in bundle.agents:
+                    current = getattr(agent, '_round_memory_ctx', '')
+                    if current != memory_ctx:
+                        agent._round_memory_ctx = memory_ctx
+
+        # 6. Inject belief states.
         for pname, bundle in self.platforms.items():
             for agent in bundle.agents:
                 belief = bundle.belief_states.get(agent.agent_id)
                 if belief is not None:
                     self.inject_belief_context(agent, belief)
 
-        # Inject scheduled events.
+        # 7. Inject scheduled events.
         self._inject_scheduled_events(round_num)
 
-        # Inject initial posts on round 0.
         if round_num == 0:
             await self._inject_initial_posts()
 
@@ -612,10 +656,22 @@ class OasisEnv:
                 all_tasks.append(self._run_agent(agent, pname))
                 task_meta.append((pname, agent))
 
+        logger.info("Dispatching %d agent tasks via asyncio.gather ...", len(all_tasks))
         if all_tasks:
             results = await asyncio.gather(*all_tasks, return_exceptions=True)
         else:
             results = []
+
+        # Log any exceptions from the gather.
+        for i, res in enumerate(results):
+            if isinstance(res, Exception):
+                pname, agent = task_meta[i]
+                logger.error(
+                    "Agent %d (%s) on %s raised: %s",
+                    agent.agent_id, agent.user_info.name, pname, res,
+                )
+
+        logger.info("All %d agent tasks completed for round %d", len(all_tasks), round_num)
 
         # Build round summary.
         action_counts: Dict[str, int] = {}
@@ -634,11 +690,9 @@ class OasisEnv:
         round_summary = "\n".join(summary_parts)
         round_detail = round_summary
 
-        if market_prices:
-            price_line = " | ".join(
-                f"{m['question']}: YES={m['price_yes']}" for m in market_prices[:3]
-            )
-            round_detail += f"\nMarket prices: {price_line}"
+        market_snap = self.bridge.latest_market
+        if market_snap:
+            round_detail += f"\nMarket: YES=${market_snap.yes_price:.2f} ({market_snap.mood})"
 
         # 9. Update belief states via round_analyzer.
         for pname, bundle in self.platforms.items():
@@ -664,7 +718,7 @@ class OasisEnv:
                 except Exception:
                     logger.exception("Error in round analysis for %s", pname)
 
-        # 10. Record divergence (internal AMM price vs real).
+        logger.info("Belief states updated. Recording divergence ...")
         if poly_bundle is not None:
             try:
                 markets = poly_bundle.db.fetchall(
@@ -738,24 +792,28 @@ class OasisEnv:
     # Main run loop
     # ------------------------------------------------------------------
 
-    async def run(self) -> None:
-        """Run the full simulation: start platform message loops, then
-        iterate through all rounds."""
+    async def run(self, start_round: int = 0) -> None:
+        """Run the simulation from *start_round* through *max_rounds*.
+
+        Args:
+            start_round: Round to begin at (0-indexed).  Set >0 to resume
+                a previously interrupted simulation.
+        """
+        total_agents = sum(len(b.agents) for b in self.platforms.values())
         logger.info(
-            "Starting simulation: %d rounds, %d platforms, %d total agents",
-            self.max_rounds,
-            len(self.platforms),
-            sum(len(b.agents) for b in self.platforms.values()),
+            "Starting simulation: rounds %d-%d, %d platforms, %d total agents",
+            start_round, self.max_rounds - 1,
+            len(self.platforms), total_agents,
         )
 
         self._log_action({
             "type": "simulation_start",
             "max_rounds": self.max_rounds,
+            "start_round": start_round,
             "platforms": list(self.platforms.keys()),
-            "total_agents": sum(len(b.agents) for b in self.platforms.values()),
+            "total_agents": total_agents,
         })
 
-        # Start platform message loops as background tasks.
         for pname, bundle in self.platforms.items():
             bundle.platform_task = asyncio.create_task(
                 bundle.platform.run(),
@@ -763,21 +821,26 @@ class OasisEnv:
             )
             logger.info("Started platform loop for %s", pname)
 
-        # Give platforms a moment to start.
         await asyncio.sleep(0.1)
 
         try:
-            for round_num in range(self.max_rounds):
+            for round_num in range(start_round, self.max_rounds):
                 if self._stopped:
                     logger.info("Simulation stopped at round %d", round_num)
                     break
+                if self._paused and self._pause_event is not None:
+                    self._log_action({"type": "simulation_paused", "round": round_num})
+                    logger.info("Simulation paused before round %d", round_num)
+                    await self._pause_event.wait()
+                    if self._stopped:
+                        break
+                    self._log_action({"type": "simulation_resumed", "round": round_num})
                 await self._run_round(round_num)
         except Exception:
             logger.exception("Simulation failed")
             self._log_action({"type": "simulation_error", "error": "unhandled exception"})
             raise
         finally:
-            # Stop all platforms.
             for pname, bundle in self.platforms.items():
                 bundle.platform.stop()
                 bundle.channel.close()
@@ -789,6 +852,8 @@ class OasisEnv:
                         pass
                 bundle.platform.close()
 
+            self.round_memory.shutdown()
+
             self._log_action({
                 "type": "simulation_end",
                 "rounds_completed": self.current_round + 1 if not self._stopped else self.current_round,
@@ -799,3 +864,21 @@ class OasisEnv:
     def stop(self) -> None:
         """Signal the simulation to stop after the current round."""
         self._stopped = True
+        # Unpause so the loop can exit cleanly.
+        if self._pause_event and not self._pause_event.is_set():
+            self._pause_event.set()
+
+    def pause(self) -> None:
+        """Pause the simulation between rounds."""
+        self._paused = True
+        if self._pause_event is None:
+            self._pause_event = asyncio.Event()
+        self._pause_event.clear()
+        logger.info("Simulation paused")
+
+    def resume(self) -> None:
+        """Resume a paused simulation."""
+        self._paused = False
+        if self._pause_event is not None:
+            self._pause_event.set()
+        logger.info("Simulation resumed")

@@ -1,7 +1,7 @@
 """Simulation configuration generation via sequential LLM calls."""
 import json
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from app.utils.llm_client import LLMClient
 
@@ -24,8 +24,14 @@ class SimulationConfigGenerator:
         profiles: List[Dict],
         simulation_requirement: str,
         max_rounds: int = 10,
+        polymarket_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Generate full simulation config via 4 sequential LLM calls."""
+        """Generate full simulation config via 4 sequential LLM calls.
+
+        Args:
+            polymarket_config: If provided, overrides market settings and
+                injects the fictional event into the schedule.
+        """
         agent_names = [p.get("name", p.get("user_name", "unknown")) for p in profiles]
 
         # Step 1: Time config
@@ -33,6 +39,27 @@ class SimulationConfigGenerator:
 
         # Step 2: Event config
         event_config = self._gen_event_config(simulation_requirement, agent_names)
+
+        # Apply polymarket overrides to event config
+        if polymarket_config:
+            mq = polymarket_config.get("market_question")
+            if mq:
+                event_config["market_question"] = mq
+            mp = polymarket_config.get("yes_price")
+            if mp is not None:
+                event_config["market_initial_probability"] = mp
+
+            # Inject the fictional event as a round-based scheduled event
+            fictional = polymarket_config.get("fictional_event")
+            event_round = polymarket_config.get("event_round", 5)
+            if fictional:
+                scheduled = event_config.get("scheduled_events", [])
+                scheduled.append({
+                    "round": event_round,
+                    "description": fictional,
+                    "platforms": ["twitter", "reddit", "polymarket"],
+                })
+                event_config["scheduled_events"] = scheduled
 
         # Step 3: Agent activity configs (batched)
         agent_configs = self._gen_agent_configs(profiles, simulation_requirement)

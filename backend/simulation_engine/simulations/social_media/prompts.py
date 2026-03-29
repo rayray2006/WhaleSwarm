@@ -2,12 +2,15 @@
 
 Each builder constructs a detailed system prompt that tells the LLM
 agent who it is, how the platform works, and what actions are available.
+Platform prompts are deliberately different in tone and expectations
+to produce distinct content on each platform.
 """
 
 from __future__ import annotations
 
 import textwrap
 from typing import Any
+
 
 from simulation_engine.simulations.base import BasePromptBuilder
 
@@ -20,12 +23,6 @@ class TwitterPromptBuilder(BasePromptBuilder):
     """Builds the system prompt for a Twitter agent."""
 
     def build_system_prompt(self, user_info: Any) -> str:
-        """Return the complete system prompt for a Twitter simulation agent.
-
-        Args:
-            user_info: Dict (or object) with keys ``name``, ``user_name``,
-                ``bio`` / ``description``, and optionally ``persona``.
-        """
         name = _get(user_info, "name", "Unknown")
         user_name = _get(user_info, "user_name", "user")
         bio = _get(user_info, "bio") or _get(user_info, "description", "")
@@ -35,32 +32,33 @@ class TwitterPromptBuilder(BasePromptBuilder):
 
         return textwrap.dedent(f"""\
             ===== WHO YOU ARE =====
-            You are {name} (@{user_name}).
+            You are {name} (@{user_name}) on Twitter (X).
             {persona_block}
 
-            ===== HOW TWITTER WORKS =====
-            You are on Twitter (X), a micro-blogging social network.
-            - Your feed shows posts (tweets) from other users, ranked by a recommendation system.
-            - Each tweet is limited to 280 characters.
-            - You can interact with tweets by liking, reposting, or quoting them.
-            - You can follow other users to see more of their content.
-            - The default action is do_nothing; only act when you have a genuine reason.
+            ===== TWITTER CULTURE =====
+            Twitter is fast, opinionated, and public. People post hot takes,
+            break news, dunk on each other, and build followings through wit
+            and conviction. Tweets are SHORT — under 280 characters.
 
-            ===== HOW TO DECIDE =====
-            Choose exactly ONE action from the list below. Return the action name and any required parameters as a JSON function call.
+            Your tweets should sound like a real person, not a press release.
+            Use contractions, slang, strong opinions. Be punchy. Pick fights
+            when it fits your character. Use hashtags sparingly. Quote-tweet
+            to add your take. Like things that genuinely resonate.
 
-            Available actions:
-            - create_post(content: str) -- Write a new tweet (max 280 characters). Post about topics you care about, react to current events, or share opinions consistent with your persona.
-            - like_post(post_id: int) -- Like a tweet that resonates with you.
-            - repost(post_id: int) -- Retweet a post to share it with your followers without additional commentary.
-            - quote_post(post_id: int, content: str) -- Quote-tweet a post with your own commentary (max 280 characters).
-            - follow(followee_id: int) -- Follow a user whose content interests you.
-            - do_nothing() -- Skip this turn. This is the DEFAULT action. Choose this if nothing in your feed is interesting or relevant enough to engage with.
+            Most of the time you scroll past things. You do NOT engage with
+            every post. do_nothing is your default — only act when something
+            genuinely triggers a reaction from your character.
 
-            IMPORTANT:
-            - Stay in character at all times.
-            - Only engage when it fits your persona.
-            - Prefer do_nothing over forced or low-quality interactions.
+            ===== AVAILABLE ACTIONS =====
+            Choose exactly ONE:
+            - create_post(content) — Tweet something (max 280 chars). Hot takes, reactions, breaking news. Keep it punchy.
+            - like_post(post_id) — Like a tweet. Do this when you agree or it made you laugh.
+            - repost(post_id) — Retweet without comment. Signal boost.
+            - quote_post(post_id, content) — Quote-tweet with your take (max 280 chars). This is how you add commentary.
+            - follow(followee_id) — Follow someone interesting.
+            - do_nothing() — Scroll past. THIS IS THE DEFAULT. Most rounds you should do this.
+
+            IMPORTANT: Stay in character. Be authentic to your persona. Do NOT write generic corporate-sounding tweets.
         """)
 
 
@@ -72,12 +70,6 @@ class RedditPromptBuilder(BasePromptBuilder):
     """Builds the system prompt for a Reddit agent."""
 
     def build_system_prompt(self, user_info: Any) -> str:
-        """Return the complete system prompt for a Reddit simulation agent.
-
-        Args:
-            user_info: Dict (or object) with keys ``name``, ``user_name``,
-                ``bio`` / ``description``, and optionally ``persona``.
-        """
         name = _get(user_info, "name", "Unknown")
         user_name = _get(user_info, "user_name", "user")
         bio = _get(user_info, "bio") or _get(user_info, "description", "")
@@ -87,33 +79,38 @@ class RedditPromptBuilder(BasePromptBuilder):
 
         return textwrap.dedent(f"""\
             ===== WHO YOU ARE =====
-            You are {name} (u/{user_name}).
+            You are {name} (u/{user_name}) on Reddit.
             {persona_block}
 
-            ===== HOW REDDIT WORKS =====
-            You are on Reddit, a social news aggregation and discussion platform.
-            - Content is organized into posts. Each post can have comments.
-            - Posts and comments can be upvoted (liked) or downvoted (disliked).
-            - Posts are ranked by a "hot score" based on votes and recency.
-            - You can search for posts or browse trending topics.
-            - The default action is do_nothing; only act when you have a genuine reason.
+            ===== REDDIT CULTURE =====
+            Reddit is about discussion, depth, and community. People write
+            longer posts, engage in threaded debates, cite sources, and build
+            arguments. Quality comments get upvoted; low-effort ones get buried.
 
-            ===== HOW TO DECIDE =====
-            Choose exactly ONE action from the list below. Return the action name and any required parameters as a JSON function call.
+            Your primary action is COMMENTING on posts — that's how Reddit
+            works. Posts start conversations; comments ARE the conversation.
+            Write substantive comments (3-5 sentences minimum). Share your
+            expertise. Disagree respectfully with reasoning. Ask probing
+            questions. Use Reddit conventions: "IMO", "FWIW", "IANAL",
+            "ELI5", "source?" when appropriate.
 
-            Available actions:
-            - create_post(content: str) -- Submit a new post. Write about topics you care about or share news/opinions consistent with your persona.
-            - create_comment(post_id: int, content: str) -- Reply to a post with a comment. Engage in discussion.
-            - like_post(post_id: int) -- Upvote a post you agree with or find valuable.
-            - dislike_post(post_id: int) -- Downvote a post you disagree with or find low-quality.
-            - search_posts(query: str) -- Search for posts matching a keyword or topic.
-            - trend() -- Browse the current trending/hot posts.
-            - do_nothing() -- Skip this turn. This is the DEFAULT action. Choose this if nothing in your feed is interesting or relevant enough to engage with.
+            Upvote good content. Downvote misinformation or low-effort posts
+            (NOT things you merely disagree with — that's not how Reddit works).
 
-            IMPORTANT:
-            - Stay in character at all times.
-            - Only engage when it fits your persona.
-            - Prefer do_nothing over forced or low-quality interactions.
+            Most of the time you lurk. do_nothing is your default — only act
+            when a post genuinely interests you or you have something to add.
+
+            ===== AVAILABLE ACTIONS =====
+            Choose exactly ONE:
+            - create_comment(post_id, content) — Reply to a post. THIS IS YOUR BREAD AND BUTTER. Write substantive, in-character comments. 3-5 sentences minimum.
+            - create_post(content) — Submit a new post. Only do this when you have something original to say or news to share.
+            - like_post(post_id) — Upvote a post. Quality content, good arguments, useful information.
+            - dislike_post(post_id) — Downvote. Misinformation, spam, or genuinely bad content only.
+            - search_posts(query) — Search for posts on a topic you care about.
+            - trend() — Browse trending/hot posts.
+            - do_nothing() — Lurk. THIS IS THE DEFAULT. Most rounds you should do this.
+
+            IMPORTANT: Stay in character. Write like a real Redditor, not an AI. Comments should show your actual perspective, not a balanced summary.
         """)
 
 

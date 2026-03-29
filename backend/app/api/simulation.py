@@ -1,5 +1,6 @@
 """Simulation API endpoints."""
 import logging
+import os
 import threading
 from dataclasses import asdict
 
@@ -108,15 +109,40 @@ def prepare_simulation():
             state.status = "preparing"
             sm.save(state)
 
-            profiles = gen.generate_profiles(state.graph_id, task.task_id)
+            stakeholders = gen.generate_profiles(state.graph_id, task.task_id)
 
-            # Save in all platform formats
-            sm.save_profiles(simulation_id, [p.to_twitter_format() for p in profiles], "twitter")
-            sm.save_profiles(simulation_id, [p.to_reddit_format() for p in profiles], "reddit")
-            sm.save_profiles(simulation_id, [p.to_polymarket_format() for p in profiles], "polymarket")
-            sm.save_profiles(simulation_id, [asdict(p) for p in profiles], "all")
+            TaskManager.update(task.task_id, progress=50,
+                               metadata={"stage": "background_population"})
+            stakeholder_names = [p.name for p in stakeholders]
+            background = gen.generate_background_population(
+                count=100,
+                simulation_requirement=state.simulation_requirement,
+                stakeholder_names=stakeholder_names,
+                task_id=task.task_id,
+            )
+            logger.info(
+                "Generated %d stakeholders + %d background = %d total",
+                len(stakeholders), len(background),
+                len(stakeholders) + len(background),
+            )
 
-            state.profile_count = len(profiles)
+            all_profiles = stakeholders + background
+
+            # Platform assignment:
+            #   Twitter  = stakeholders (influencers who post takes)
+            #   Reddit   = background people (crowd that discusses and reacts)
+            #              + stakeholders (they lurk/comment occasionally)
+            #   Polymarket = everyone trades
+            twitter_profiles = [p.to_twitter_format() for p in stakeholders]
+            reddit_profiles = [p.to_reddit_format() for p in background + stakeholders]
+            polymarket_profiles = [p.to_polymarket_format() for p in all_profiles]
+
+            sm.save_profiles(simulation_id, twitter_profiles, "twitter")
+            sm.save_profiles(simulation_id, reddit_profiles, "reddit")
+            sm.save_profiles(simulation_id, polymarket_profiles, "polymarket")
+            sm.save_profiles(simulation_id, [asdict(p) for p in all_profiles], "all")
+
+            state.profile_count = len(all_profiles)
             sm.save(state)
 
             # Generate simulation config (also during prepare, not at start time)
@@ -125,10 +151,20 @@ def prepare_simulation():
 
             from app.services.simulation_config_generator import SimulationConfigGenerator
             config_gen = SimulationConfigGenerator(llm)
+
+            # Load polymarket overrides from project if available
+            polymarket_config = None
+            from app.models.project import ProjectManager
+            pm = ProjectManager(config.upload_dir)
+            project = pm.load(state.project_id)
+            if project and project.polymarket_config:
+                polymarket_config = project.polymarket_config
+
             sim_config = config_gen.generate(
                 profiles=[asdict(p) for p in profiles],
                 simulation_requirement=state.simulation_requirement,
                 max_rounds=config.default_max_rounds,
+                polymarket_config=polymarket_config,
             )
             sm.save_config(simulation_id, sim_config)
             state.config_generated = True
@@ -219,6 +255,63 @@ def stop_simulation():
     return jsonify({"status": "stopped"})
 
 
+def _get_sim_pid(simulation_id: str) -> int | None:
+    """Get the PID of a running simulation subprocess."""
+    import signal as sig
+    from app.services.simulation_runner import SimulationRunner
+
+    # Try in-memory first
+    proc = SimulationRunner._processes.get(simulation_id)
+    if proc is not None and proc.poll() is None:
+        return proc.pid
+
+    # Fallback: read sim.pid file
+    config = _get_config()
+    pid_path = os.path.join(config.upload_dir, "simulations", simulation_id, "sim.pid")
+    if os.path.exists(pid_path):
+        try:
+            pid = int(open(pid_path).read().strip())
+            os.kill(pid, 0)  # check if alive (signal 0 = no-op)
+            return pid
+        except (ValueError, ProcessLookupError, PermissionError):
+            pass
+    return None
+
+
+@simulation_bp.route("/pause", methods=["POST"])
+def pause_simulation():
+    data = request.get_json()
+    simulation_id = data.get("simulation_id")
+    if not simulation_id:
+        return jsonify({"error": "simulation_id required"}), 400
+
+    simulation_id = _resolve_sim_id(simulation_id)
+    pid = _get_sim_pid(simulation_id)
+    if pid is None:
+        return jsonify({"error": "Simulation not running"}), 404
+
+    import signal as sig
+    os.kill(pid, sig.SIGUSR1)
+    return jsonify({"status": "paused", "simulation_id": simulation_id})
+
+
+@simulation_bp.route("/resume", methods=["POST"])
+def resume_simulation():
+    data = request.get_json()
+    simulation_id = data.get("simulation_id")
+    if not simulation_id:
+        return jsonify({"error": "simulation_id required"}), 400
+
+    simulation_id = _resolve_sim_id(simulation_id)
+    pid = _get_sim_pid(simulation_id)
+    if pid is None:
+        return jsonify({"error": "Simulation not running"}), 404
+
+    import signal as sig
+    os.kill(pid, sig.SIGUSR2)
+    return jsonify({"status": "running", "simulation_id": simulation_id})
+
+
 @simulation_bp.route("/<simulation_id>/run-status", methods=["GET"])
 def get_run_status(simulation_id):
     simulation_id = _resolve_sim_id(simulation_id)
@@ -226,9 +319,119 @@ def get_run_status(simulation_id):
     sm = SimulationManager(config)
     sim_dir = sm.get_sim_dir(simulation_id)
     from app.services.simulation_runner import SimulationRunner
+    from app.services.simulation_ipc import get_posts_from_db
     state = SimulationRunner.get_run_state(simulation_id, sim_dir)
     if not state:
         return jsonify({"error": "No run state found"}), 404
+
+    # Include live posts + comments from SQLite.
+    # Posts are returned newest-first; we reverse for display.
+    def _format_comment(c):
+        return {
+            "author": c.get("user_name") or c.get("name") or f"user_{c['user_id']}",
+            "content": c.get("content", ""),
+        }
+
+    try:
+        twitter_posts = get_posts_from_db(sim_dir, "twitter", limit=50)
+        state["tweets"] = [
+            {
+                "post_id": p["post_id"],
+                "author": p.get("user_name") or p.get("name") or f"user_{p['user_id']}",
+                "content": p.get("content", ""),
+                "text": p.get("content", ""),
+                "likes": p.get("num_likes", 0),
+                "like_count": p.get("num_likes", 0),
+                "dislikes": p.get("num_dislikes", 0),
+                "comments": [_format_comment(c) for c in p.get("comments", [])],
+            }
+            for p in twitter_posts
+        ]
+    except Exception:
+        pass
+
+    try:
+        reddit_posts = get_posts_from_db(sim_dir, "reddit", limit=50)
+        state["reddit_posts"] = [
+            {
+                "post_id": p["post_id"],
+                "author": p.get("user_name") or p.get("name") or f"user_{p['user_id']}",
+                "content": p.get("content", ""),
+                "title": p.get("content", ""),
+                "text": p.get("content", ""),
+                "score": (p.get("num_likes", 0) or 0) - (p.get("num_dislikes", 0) or 0),
+                "upvotes": p.get("num_likes", 0),
+                "comments": [_format_comment(c) for c in p.get("comments", [])],
+            }
+            for p in reddit_posts
+        ]
+    except Exception:
+        pass
+
+    # Include live Polymarket data (prices, portfolios).
+    try:
+        pm_db_path = os.path.join(sim_dir, "polymarket.db")
+        if os.path.exists(pm_db_path):
+            import sqlite3 as _sql
+            pm_conn = _sql.connect(pm_db_path)
+            pm_conn.row_factory = _sql.Row
+            pm_conn.execute("PRAGMA read_uncommitted = ON")
+
+            # Current market price from AMM reserves.
+            markets = pm_conn.execute(
+                "SELECT market_id, question, outcome_a, outcome_b, "
+                "reserve_a, reserve_b FROM market WHERE resolved = 0"
+            ).fetchall()
+
+            if markets:
+                m = markets[0]
+                total = (m["reserve_a"] or 0) + (m["reserve_b"] or 0)
+                yes_price = m["reserve_b"] / total if total > 0 else 0.5
+
+                # Portfolio leaderboard (top traders by P&L).
+                traders = pm_conn.execute(
+                    "SELECT p.user_id, p.balance, u.user_name, u.name "
+                    "FROM portfolio p "
+                    "LEFT JOIN user u ON p.user_id = u.user_id "
+                    "ORDER BY p.balance DESC LIMIT 10"
+                ).fetchall()
+
+                leaderboard = []
+                for t in traders:
+                    # Calculate position value.
+                    positions = pm_conn.execute(
+                        "SELECT shares, outcome FROM position WHERE user_id = ?",
+                        (t["user_id"],),
+                    ).fetchall()
+                    pos_value = 0.0
+                    for pos in positions:
+                        if pos["outcome"] == m["outcome_a"]:
+                            pos_value += pos["shares"] * (1 - yes_price)
+                        else:
+                            pos_value += pos["shares"] * yes_price
+                    total_value = t["balance"] + pos_value
+                    pnl = total_value - 1000.0  # initial balance
+                    leaderboard.append({
+                        "agent_id": t["user_id"],
+                        "name": t["user_name"] or t["name"] or f"trader_{t['user_id']}",
+                        "agent_name": t["user_name"] or t["name"] or f"trader_{t['user_id']}",
+                        "pnl": round(pnl, 2),
+                        "balance": round(t["balance"], 2),
+                        "total_value": round(total_value, 2),
+                    })
+                leaderboard.sort(key=lambda x: x["pnl"], reverse=True)
+
+                state["polymarket"] = {
+                    "yes_price": round(yes_price, 4),
+                    "no_price": round(1 - yes_price, 4),
+                    "market_question": m["question"],
+                    "leaderboard": leaderboard[:8],
+                }
+
+            pm_conn.close()
+    except Exception:
+        pass
+
     return jsonify(state)
 
 

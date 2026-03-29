@@ -22,3 +22,11 @@ export function getTask(taskId) {
 export function getGraph(graphId) {
   return service.get(`/graph/${graphId}`)
 }
+
+export function searchPolymarkets(query) {
+  return service.post('/graph/polymarket-search', { query })
+}
+
+export function polymarketSetup(data) {
+  return service.post('/graph/polymarket-setup', data, { timeout: 180000 })
+}

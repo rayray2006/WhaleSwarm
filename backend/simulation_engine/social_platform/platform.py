@@ -238,6 +238,10 @@ class Platform(BasePlatform):
         if post_id is None:
             return {"success": False, "error": "missing post_id"}
 
+        post = self.db.fetchone("SELECT user_id FROM post WHERE post_id = ?", (post_id,))
+        if post and post["user_id"] == agent_id:
+            return {"success": False, "error": "cannot like your own post"}
+
         created_at = now_iso()
         try:
             self.db.execute(
@@ -434,6 +438,10 @@ class Platform(BasePlatform):
         post_id = message.get("post_id")
         if post_id is None:
             return {"success": False, "error": "missing post_id"}
+
+        post = self.db.fetchone("SELECT user_id FROM post WHERE post_id = ?", (post_id,))
+        if post and post["user_id"] == agent_id:
+            return {"success": False, "error": "cannot dislike your own post"}
 
         created_at = now_iso()
         try:

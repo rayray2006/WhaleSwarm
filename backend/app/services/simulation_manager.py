@@ -30,19 +30,21 @@ class SimulationManager:
         self.sims_dir = os.path.join(config.upload_dir, "simulations")
         os.makedirs(self.sims_dir, exist_ok=True)
 
-    def _sim_dir(self, sim_id: str) -> str:
+    def _sim_dir(self, sim_id: str, create: bool = False) -> str:
         d = os.path.join(self.sims_dir, sim_id)
-        os.makedirs(d, exist_ok=True)
+        if create:
+            os.makedirs(d, exist_ok=True)
         return d
 
-    def _state_file(self, sim_id: str) -> str:
-        return os.path.join(self._sim_dir(sim_id), "simulation.json")
+    def _state_file(self, sim_id: str, create: bool = False) -> str:
+        return os.path.join(self._sim_dir(sim_id, create=create), "simulation.json")
 
     def create(self, state: SimulationState) -> SimulationState:
         self.save(state)
         return state
 
     def save(self, state: SimulationState):
+        os.makedirs(self._sim_dir(state.simulation_id), exist_ok=True)
         with open(self._state_file(state.simulation_id), "w") as f:
             json.dump(asdict(state), f, indent=2)
 

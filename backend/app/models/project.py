@@ -16,6 +16,7 @@ class Project:
     additional_context: str = ""
     ontology: Optional[Dict[str, Any]] = None
     graph_id: Optional[str] = None
+    polymarket_config: Optional[Dict[str, Any]] = None
 
     def __post_init__(self):
         if not self.project_id:

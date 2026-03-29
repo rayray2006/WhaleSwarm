@@ -53,11 +53,10 @@ def generate_agents(
     agents: List[SocialAgent] = []
 
     for idx, profile in enumerate(profiles):
-        # user_id may be a UUID string; use sequential integer IDs for the simulation
-        try:
-            agent_id = int(profile.get("user_id", idx))
-        except (ValueError, TypeError):
-            agent_id = idx
+        # Always use sequential integer IDs for the simulation.
+        # Profile user_ids may be hex strings (e.g. "96123507") that parse
+        # as huge integers, which would break _agent_count / rec_matrix sizing.
+        agent_id = idx
 
         # Resolve display name.
         name = (

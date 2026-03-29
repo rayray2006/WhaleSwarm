@@ -1,13 +1,15 @@
 """Social-media observation environment for Twitter and Reddit.
 
 Converts the current platform state visible to an agent into a text
-prompt that the LLM can reason about.  Includes the agent's feed,
-notifications, and any cross-platform context injected by the bridge.
+prompt that the LLM can reason about.  Includes the agent's feed
+(personalized via rec_matrix when available), notifications, comments
+on posts, and any cross-platform context injected by the bridge.
 """
 
 from __future__ import annotations
 
-from typing import Any, List
+import random
+from typing import Any, Dict, List, Optional
 
 from simulation_engine.simulations.base import BaseEnvironment
 from simulation_engine.social_platform.database import Database
@@ -22,18 +24,27 @@ class SocialMediaEnvironment(BaseEnvironment):
         The shared SQLite Database instance used by the platform.
     platform_name:
         Either ``"Twitter"`` or ``"Reddit"`` -- used for prompt labelling.
+    rec_matrix:
+        Optional reference to the platform's recommendation matrix
+        (``{user_id: [post_id, ...]}``) for personalized feeds.
     """
 
-    def __init__(self, db: Database, platform_name: str = "Twitter") -> None:
+    def __init__(
+        self,
+        db: Database,
+        platform_name: str = "Twitter",
+        rec_matrix: Optional[Dict[int, List[int]]] = None,
+    ) -> None:
         super().__init__()
         self.db = db
         self.platform_name = platform_name
+        self.rec_matrix = rec_matrix
 
     async def to_text_prompt(self, agent_id: int) -> str:
         """Build the observation prompt for *agent_id*.
 
         Sections:
-        1. YOUR FEED -- recent posts from the recommendation engine
+        1. YOUR FEED -- personalized posts (via rec_matrix or recent)
         2. YOUR NOTIFICATIONS -- likes/follows received
         3. CROSS-PLATFORM CONTEXT -- injected observations (if any)
         4. Call to action
@@ -41,14 +52,7 @@ class SocialMediaEnvironment(BaseEnvironment):
         sections: list[str] = []
 
         # ---- 1. Feed --------------------------------------------------------
-        # Get recent posts (most recent 20).
-        posts = self.db.fetchall(
-            "SELECT p.post_id, p.user_id, p.content, p.created_at, "
-            "p.num_likes, p.num_dislikes, u.user_name, u.name "
-            "FROM post p "
-            "LEFT JOIN user u ON p.user_id = u.user_id "
-            "ORDER BY p.post_id DESC LIMIT 20",
-        )
+        posts = self._get_feed_posts(agent_id, limit=15)
 
         if posts:
             feed_lines: list[str] = []
@@ -57,11 +61,35 @@ class SocialMediaEnvironment(BaseEnvironment):
                 likes = p["num_likes"] or 0
                 dislikes = p["num_dislikes"] or 0
                 content = (p["content"] or "")[:300]
-                line = (
-                    f"  [Post #{p['post_id']}] @{who}: {content}\n"
-                    f"    Likes: {likes}  Dislikes: {dislikes}"
+
+                if self.platform_name.lower() == "reddit":
+                    score = likes - dislikes
+                    line = (
+                        f"  [Post #{p['post_id']}] u/{who} ({score:+d} pts):\n"
+                        f"    {content}"
+                    )
+                else:
+                    line = (
+                        f"  [Post #{p['post_id']}] @{who}: {content}\n"
+                        f"    {likes} likes"
+                    )
+
+                # Attach comments (up to 3 per post).
+                comments = self.db.fetchall(
+                    "SELECT c.content, u.user_name, u.name "
+                    "FROM comment c "
+                    "LEFT JOIN user u ON c.user_id = u.user_id "
+                    "WHERE c.post_id = ? "
+                    "ORDER BY c.comment_id DESC LIMIT 3",
+                    (p["post_id"],),
                 )
+                for c in reversed(list(comments)):
+                    cwho = c["user_name"] or c["name"] or "anon"
+                    ctext = (c["content"] or "")[:200]
+                    line += f"\n      > {cwho}: {ctext}"
+
                 feed_lines.append(line)
+
             sections.append(
                 f"===== YOUR {self.platform_name.upper()} FEED =====\n"
                 + "\n".join(feed_lines)
@@ -73,7 +101,6 @@ class SocialMediaEnvironment(BaseEnvironment):
             )
 
         # ---- 2. Notifications -----------------------------------------------
-        # Check for recent likes on agent's own posts.
         own_likes = self.db.fetchall(
             'SELECT COUNT(*) as cnt FROM "like" l '
             "JOIN post p ON l.post_id = p.post_id "
@@ -108,3 +135,38 @@ class SocialMediaEnvironment(BaseEnvironment):
         )
 
         return "\n\n".join(sections)
+
+    def _get_feed_posts(self, agent_id: int, limit: int = 15) -> list:
+        """Return posts for this agent's feed.
+
+        Uses the recommendation matrix for personalization when available,
+        falling back to the most recent posts.
+        """
+        rec_ids = None
+        if self.rec_matrix is not None:
+            rec_ids = self.rec_matrix.get(agent_id)
+
+        if rec_ids:
+            # Fetch recommended posts (shuffled for variety).
+            ids = list(rec_ids[:limit])
+            random.shuffle(ids)
+            placeholders = ",".join("?" for _ in ids)
+            return self.db.fetchall(
+                f"SELECT p.post_id, p.user_id, p.content, p.created_at, "
+                f"p.num_likes, p.num_dislikes, u.user_name, u.name "
+                f"FROM post p "
+                f"LEFT JOIN user u ON p.user_id = u.user_id "
+                f"WHERE p.post_id IN ({placeholders}) "
+                f"ORDER BY p.post_id DESC",
+                tuple(ids),
+            )
+
+        # Fallback: most recent posts.
+        return self.db.fetchall(
+            "SELECT p.post_id, p.user_id, p.content, p.created_at, "
+            "p.num_likes, p.num_dislikes, u.user_name, u.name "
+            "FROM post p "
+            "LEFT JOIN user u ON p.user_id = u.user_id "
+            "ORDER BY p.post_id DESC LIMIT ?",
+            (limit,),
+        )

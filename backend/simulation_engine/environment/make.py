@@ -93,8 +93,12 @@ def _create_social_platform_bundle(
         max_rec_post_len=20,
     )
 
-    # Environment.
-    env = SocialMediaEnvironment(db=platform.db, platform_name=platform_name.capitalize())
+    # Environment — pass rec_matrix reference for personalized feeds.
+    env = SocialMediaEnvironment(
+        db=platform.db,
+        platform_name=platform_name.capitalize(),
+        rec_matrix=platform.rec_matrix,
+    )
 
     # Prompt builder and action class.
     if platform_name == "twitter":
@@ -194,9 +198,24 @@ def _create_polymarket_bundle(
         })
 
     # Create initial market(s) from config.
+    # Check multiple locations — the config generator puts market data in
+    # "events" but ideally it would also be in "platform.markets".
     markets_config = sim_config.get("platform", {}).get("markets", [])
+
     if not markets_config:
-        # Fallback: create a default market from the simulation requirement.
+        # Read from events section (where SimulationConfigGenerator puts it).
+        events = sim_config.get("events", {})
+        market_q = events.get("market_question", "")
+        if market_q:
+            markets_config = [{
+                "question": market_q,
+                "outcome_a": events.get("market_outcome_a", "YES"),
+                "outcome_b": events.get("market_outcome_b", "NO"),
+                "initial_probability": float(events.get("market_initial_probability", 0.5)),
+            }]
+
+    if not markets_config:
+        # Last fallback: use simulation_requirement from the top-level config.
         requirement = sim_config.get("simulation_requirement", "")
         if requirement:
             markets_config = [{
@@ -213,6 +232,11 @@ def _create_polymarket_bundle(
             "outcome_b": market_cfg.get("outcome_b", "NO"),
             "initial_probability": float(market_cfg.get("initial_probability", 0.5)),
         })
+
+    if markets_config:
+        logger.info("Created %d Polymarket market(s)", len(markets_config))
+    else:
+        logger.warning("No market configuration found — Polymarket will have no markets!")
 
     # Build belief states.
     belief_states: Dict[int, BeliefState] = {}
@@ -335,6 +359,7 @@ def create_environment(
     for bundle in platforms.values():
         for agent in bundle.agents:
             agent_graph.add_agent(agent)
+            agent.agent_graph = agent_graph
 
     # Clock.
     time_cfg = sim_config_data.get("time", {})

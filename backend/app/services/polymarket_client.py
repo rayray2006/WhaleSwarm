@@ -92,25 +92,51 @@ class PolymarketClient:
     def search_markets(self, query: str, limit: int = 10) -> List[Dict]:
         """Search for markets by keyword.
 
-        Useful for finding condition_id and token_ids for a given topic.
+        The Gamma API's query/title params don't actually filter, so we
+        fetch a large batch of active events sorted by volume and filter
+        client-side.  Each event may contain multiple sub-markets; we
+        flatten them and return the best matches.
         """
         try:
-            # Use the Gamma API (Polymarket's market discovery endpoint)
             resp = self.session.get(
-                "https://gamma-api.polymarket.com/markets",
+                "https://gamma-api.polymarket.com/events",
                 params={
-                    "limit": limit,
+                    "limit": 200,
                     "active": True,
                     "closed": False,
-                    "query": query,
+                    "order": "volume24hr",
+                    "ascending": False,
                 },
-                timeout=10,
+                timeout=15,
             )
             resp.raise_for_status()
-            return resp.json()
+            events = resp.json()
         except Exception as e:
-            logger.warning(f"Failed to search markets: {e}")
+            logger.warning(f"Failed to fetch Polymarket events: {e}")
             return []
+
+        # Client-side keyword search across event titles and market questions.
+        query_lower = query.lower().strip()
+        keywords = query_lower.split()
+
+        scored: List[tuple] = []
+        for event in events:
+            title = (event.get("title") or "").lower()
+            # Check sub-markets within the event.
+            markets = event.get("markets") or []
+            for market in markets:
+                question = (market.get("question") or market.get("title") or "").lower()
+                text = f"{title} {question}"
+                # Score: count how many keywords match.
+                hits = sum(1 for kw in keywords if kw in text)
+                if hits > 0:
+                    # Attach event-level metadata to market for display.
+                    market["_event_title"] = event.get("title", "")
+                    scored.append((hits, market))
+
+        # Sort by keyword hits descending, then take top N.
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [m for _, m in scored[:limit]]
 
     def get_market_prices_for_question(self, question: str) -> Optional[Tuple[float, float]]:
         """Search for a market matching a question and return (yes_price, no_price).

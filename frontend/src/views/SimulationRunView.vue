@@ -23,12 +23,25 @@
       </div>
       <div class="header-right">
         <button
-          class="btn btn-danger"
-          :disabled="runStatus === 'completed' || runStatus === 'stopped' || stopping"
-          @click="handleStop"
-        >
-          {{ stopping ? 'STOPPING...' : 'STOP' }}
-        </button>
+          v-if="isRunning && !paused"
+          class="btn btn-warn"
+          @click="handlePause"
+        >PAUSE</button>
+        <button
+          v-if="paused"
+          class="btn btn-accent"
+          @click="handleResume"
+        >RESUME</button>
+        <button
+          v-if="isFinished"
+          class="btn"
+          @click="$router.push(`/simulation/${simId}`)"
+        >BACK</button>
+        <button
+          v-if="isFinished"
+          class="btn btn-primary"
+          @click="$router.push(`/report/${simId}`)"
+        >VIEW REPORT</button>
       </div>
     </div>
 
@@ -77,7 +90,7 @@
           <div v-for="(tweet, i) in tweets.slice(0, 30)" :key="i" class="tweet-item">
             <div class="tweet-top">
               <span class="tweet-author">@{{ tweet.author || tweet.agent_name || 'unknown' }}</span>
-              <span class="tweet-round">R{{ tweet.round }}</span>
+              <span class="tweet-id">#{{ tweet.post_id }}</span>
             </div>
             <p class="tweet-text">{{ tweet.content || tweet.text }}</p>
             <div class="tweet-stats">
@@ -85,7 +98,13 @@
               <span class="tweet-stat" v-if="tweet.reposts || tweet.repost_count">
                 &#8634; {{ tweet.reposts || tweet.repost_count }}
               </span>
-              <span class="tweet-stat repost-badge" v-if="tweet.is_repost">REPOST</span>
+            </div>
+            <div v-if="tweet.comments && tweet.comments.length" class="comment-thread">
+              <div v-for="(c, j) in tweet.comments.slice(0, 3)" :key="j" class="comment-item">
+                <span class="comment-author">@{{ c.author }}</span>
+                <span class="comment-text">{{ c.content }}</span>
+              </div>
+              <span v-if="tweet.comments.length > 3" class="comment-more">+{{ tweet.comments.length - 3 }} more</span>
             </div>
           </div>
           <div v-if="tweets.length === 0" class="empty-feed">
@@ -113,10 +132,17 @@
               <div class="reddit-meta">
                 <span class="reddit-sub">r/{{ post.subreddit || 'simulation' }}</span>
                 <span class="reddit-author">u/{{ post.author || post.agent_name || 'anon' }}</span>
-                <span class="reddit-round">R{{ post.round }}</span>
+                <span class="reddit-id">#{{ post.post_id }}</span>
               </div>
               <p class="reddit-title">{{ post.title || post.content || post.text }}</p>
               <p class="reddit-body" v-if="post.body">{{ truncate(post.body, 120) }}</p>
+              <div v-if="post.comments && post.comments.length" class="comment-thread">
+                <div v-for="(c, j) in post.comments.slice(0, 4)" :key="j" class="comment-item">
+                  <span class="comment-author">u/{{ c.author }}</span>
+                  <span class="comment-text">{{ c.content }}</span>
+                </div>
+                <span v-if="post.comments.length > 4" class="comment-more">+{{ post.comments.length - 4 }} more</span>
+              </div>
             </div>
           </div>
           <div v-if="redditPosts.length === 0" class="empty-feed">
@@ -159,23 +185,17 @@
       </div>
     </div>
 
-    <!-- Completion overlay -->
-    <div v-if="runStatus === 'completed'" class="completion-overlay">
-      <div class="completion-card card">
-        <div class="card-header">Simulation Complete</div>
-        <p>{{ totalRounds }} rounds executed.</p>
-        <div class="completion-actions">
-          <button class="btn" @click="$router.push(`/simulation/${simId}`)">BACK TO SETUP</button>
-          <button class="btn btn-primary" @click="$router.push(`/report/${simId}`)">VIEW REPORT</button>
-        </div>
-      </div>
+    <!-- Completion toast -->
+    <div v-if="runStatus === 'completed' && !dismissedOverlay" class="completion-toast" @click="dismissedOverlay = true">
+      <span>Simulation complete &mdash; {{ totalRounds }} rounds executed.</span>
+      <span class="toast-dismiss">click to dismiss</span>
     </div>
   </div>
 </template>
 
 <script>
 import * as d3 from 'd3'
-import { getRunStatus, getConfig, stopSimulation } from '../api/simulation'
+import { getRunStatus, getConfig, stopSimulation, pauseSimulation, resumeSimulation } from '../api/simulation'
 
 export default {
   name: 'SimulationRunView',
@@ -192,10 +212,11 @@ export default {
       priceHistory: [],
       currentYesPrice: 0.5,
       portfolios: [],
-      stopping: false,
+      paused: false,
       error: null,
       pollTimer: null,
       lastSeenRound: -1,
+      dismissedOverlay: false,
     }
   },
   computed: {
@@ -209,8 +230,14 @@ export default {
     currentNoPrice() {
       return Math.max(0, 1 - this.currentYesPrice)
     },
+    isRunning() {
+      return this.runStatus === 'running' || this.runStatus === 'loading'
+    },
+    isFinished() {
+      return this.runStatus === 'completed' || this.runStatus === 'stopped'
+    },
     displayActions() {
-      return [...this.actions].reverse().slice(0, 100)
+      return [...this.actions].reverse()
     },
     topTraders() {
       return [...this.portfolios]
@@ -245,7 +272,8 @@ export default {
         const data = res.data
 
         this.runStatus = data.status || 'running'
-        this.currentRound = data.current_round || data.round || 0
+        if (data.status === 'paused') this.paused = true
+        this.currentRound = data.rounds_completed || data.current_round || data.round || 0
         this.totalRounds = data.total_rounds || this.totalRounds
         this.simulatedTime = data.simulated_time || data.sim_time || this.formatSimTime(this.currentRound)
 
@@ -438,15 +466,21 @@ export default {
         .style('font-size', '10px')
         .text('YES Price')
     },
-    async handleStop() {
-      this.stopping = true
+    async handlePause() {
       try {
-        await stopSimulation({ simulation_id: this.simId })
-        this.runStatus = 'stopped'
+        await pauseSimulation({ simulation_id: this.simId })
+        this.paused = true
       } catch (e) {
-        this.error = e.response?.data?.detail || 'Failed to stop simulation.'
+        this.error = e.response?.data?.error || 'Failed to pause simulation.'
       }
-      this.stopping = false
+    },
+    async handleResume() {
+      try {
+        await resumeSimulation({ simulation_id: this.simId })
+        this.paused = false
+      } catch (e) {
+        this.error = e.response?.data?.error || 'Failed to resume simulation.'
+      }
     },
     formatSimTime(round) {
       const base = new Date(2025, 0, 1, 8, 0)
@@ -687,7 +721,7 @@ export default {
   color: #1DA1F2;
   font-weight: 700;
 }
-.tweet-round {
+.tweet-round, .tweet-id {
   font-size: 10px;
   color: var(--muted);
 }
@@ -770,6 +804,33 @@ export default {
   font-size: 11px;
   color: var(--text-secondary);
   margin-top: 2px;
+}
+
+/* Comment threads (shared by Twitter and Reddit panels) */
+.comment-thread {
+  margin-top: 4px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+}
+.comment-item {
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 2px 0;
+  line-height: 1.3;
+}
+.comment-author {
+  color: var(--muted);
+  font-weight: 600;
+  margin-right: 4px;
+  font-size: 10px;
+}
+.comment-text {
+  color: var(--text-secondary);
+}
+.comment-more {
+  font-size: 10px;
+  color: var(--muted);
+  font-style: italic;
 }
 
 /* Polymarket Panel */
@@ -866,28 +927,43 @@ export default {
 .muted { color: var(--muted); font-size: 13px; }
 
 /* Completion overlay */
-.completion-overlay {
+.btn-warn {
+  background: var(--warning, #D69E2E);
+  border-color: var(--warning, #D69E2E);
+  color: var(--background);
+  font-weight: 700;
+}
+.btn-warn:hover { opacity: 0.85; }
+.btn-accent {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--background);
+  font-weight: 700;
+}
+.btn-accent:hover { opacity: 0.85; }
+
+.completion-toast {
   position: fixed;
-  inset: 0;
-  background: rgba(10, 10, 10, 0.85);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  bottom: var(--space-3);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--surface-raised);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  font-weight: 700;
   z-index: 100;
+  cursor: pointer;
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
   animation: fadeIn 0.3s ease;
 }
-.completion-card {
-  max-width: 400px;
-  text-align: center;
-}
-.completion-card p {
-  color: var(--text-secondary);
-  margin-bottom: var(--space-3);
-  font-size: 14px;
-}
-.completion-actions {
-  display: flex;
-  gap: var(--space-2);
-  justify-content: center;
+.toast-dismiss {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 11px;
 }
 </style>

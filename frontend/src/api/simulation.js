@@ -24,6 +24,14 @@ export function stopSimulation(data) {
   return service.post('/simulation/stop', data)
 }
 
+export function pauseSimulation(data) {
+  return service.post('/simulation/pause', data)
+}
+
+export function resumeSimulation(data) {
+  return service.post('/simulation/resume', data)
+}
+
 export function getRunStatus(simulationId) {
   return service.get(`/simulation/${simulationId}/run-status`)
 }

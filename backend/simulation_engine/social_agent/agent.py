@@ -60,8 +60,8 @@ class SocialAgent:
         self.cross_platform_context: str = ""
         self.interview_history: List[Dict[str, str]] = []
         self.max_iterations = max_iterations
+        self.agent_graph = None
 
-        # LLM client — set externally or lazily resolved.
         self._llm_client = llm_client
 
     # ------------------------------------------------------------------
@@ -119,13 +119,21 @@ class SocialAgent:
         all_responses: List[Any] = []
 
         for iteration in range(self.max_iterations):
-            # 3. Call LLM with tools.
-            response = self.llm_client.complete_with_tools(
-                messages=messages,
-                tools=self.action_tools,
-                temperature=0.7,
-                max_tokens=1024,
-            )
+            # 3. Call LLM with tools (async to avoid blocking the event loop).
+            if hasattr(self.llm_client, 'acomplete_with_tools'):
+                response = await self.llm_client.acomplete_with_tools(
+                    messages=messages,
+                    tools=self.action_tools,
+                    temperature=0.7,
+                    max_tokens=1024,
+                )
+            else:
+                response = self.llm_client.complete_with_tools(
+                    messages=messages,
+                    tools=self.action_tools,
+                    temperature=0.7,
+                    max_tokens=1024,
+                )
 
             choice = response.choices[0]
             assistant_msg = choice.message
@@ -193,6 +201,8 @@ class SocialAgent:
                 all_tool_calls.append({"name": fn_name, "arguments": fn_args})
                 all_responses.append(result)
 
+                self._sync_graph(fn_name, fn_args, result)
+
                 # Append tool result for multi-turn.
                 messages.append(
                     {
@@ -207,6 +217,23 @@ class SocialAgent:
             "tool_calls": all_tool_calls,
             "responses": all_responses,
         }
+
+    def _sync_graph(self, action_name: str, args: dict, result: Any) -> None:
+        if self.agent_graph is None:
+            return
+        if not isinstance(result, dict) or not result.get("success"):
+            return
+        try:
+            if action_name == "follow":
+                target = args.get("followee_id")
+                if target is not None:
+                    self.agent_graph.add_edge(self.agent_id, int(target))
+            elif action_name == "unfollow":
+                target = args.get("followee_id")
+                if target is not None:
+                    self.agent_graph.remove_edge(self.agent_id, int(target))
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Interview (direct Q&A)
