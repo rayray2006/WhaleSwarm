@@ -7,6 +7,7 @@
       <div class="header-left">
         <h2 class="page-title">{{ config?.name || 'Simulation' }}</h2>
         <span class="tag" :class="'status-' + runStatus">{{ runStatus }}</span>
+        <span v-if="counterfactualMode" class="tag tag-cf">COUNTERFACTUAL</span>
       </div>
       <div class="header-center">
         <div class="time-display">
@@ -45,10 +46,31 @@
       </div>
     </div>
 
+    <!-- Counterfactual event banner -->
+    <div v-if="counterfactualMode && fictionalEvent" class="cf-banner">
+      <span class="cf-banner-label">INJECTED AT ROUND {{ eventRound }}:</span>
+      <span class="cf-banner-text">{{ fictionalEvent }}</span>
+    </div>
+
     <!-- Error banner -->
     <div v-if="error" class="error-banner">
       <span>{{ error }}</span>
       <button class="btn" @click="error = null">DISMISS</button>
+    </div>
+
+    <!-- Universe toggle (only in counterfactual mode) -->
+    <div v-if="counterfactualMode" class="universe-toggle-bar">
+      <span class="toggle-label">Viewing feeds from:</span>
+      <button
+        class="btn btn-sm"
+        :class="{ 'btn-active': activeUniverse === 'baseline' }"
+        @click="activeUniverse = 'baseline'"
+      >Baseline</button>
+      <button
+        class="btn btn-sm"
+        :class="{ 'btn-active': activeUniverse === 'counterfactual' }"
+        @click="activeUniverse = 'counterfactual'"
+      >Counterfactual</button>
     </div>
 
     <!-- Main grid -->
@@ -57,7 +79,7 @@
       <div class="panel action-feed-panel">
         <div class="panel-header">
           <span class="panel-title">Action Feed</span>
-          <span class="tag">{{ actions.length }} actions</span>
+          <span class="tag">{{ activeActions.length }} actions</span>
         </div>
         <div class="action-list" ref="actionList">
           <div
@@ -74,7 +96,7 @@
             <span class="action-content">{{ truncate(action.content || action.text || '', 80) }}</span>
             <span class="action-round">R{{ action.round }}</span>
           </div>
-          <div v-if="actions.length === 0" class="empty-feed">
+          <div v-if="activeActions.length === 0" class="empty-feed">
             <span class="muted">Waiting for actions...</span>
           </div>
         </div>
@@ -84,10 +106,10 @@
       <div class="panel twitter-panel">
         <div class="panel-header">
           <span class="panel-title platform-twitter">&#120143; Twitter</span>
-          <span class="tag">{{ tweets.length }} tweets</span>
+          <span class="tag">{{ activeTweets.length }} tweets</span>
         </div>
         <div class="tweet-list">
-          <div v-for="(tweet, i) in tweets.slice(0, 30)" :key="i" class="tweet-item">
+          <div v-for="(tweet, i) in activeTweets.slice(0, 30)" :key="i" class="tweet-item">
             <div class="tweet-top">
               <span class="tweet-author">@{{ tweet.author || tweet.agent_name || 'unknown' }}</span>
               <span class="tweet-id">#{{ tweet.post_id }}</span>
@@ -107,7 +129,7 @@
               <span v-if="tweet.comments.length > 3" class="comment-more">+{{ tweet.comments.length - 3 }} more</span>
             </div>
           </div>
-          <div v-if="tweets.length === 0" class="empty-feed">
+          <div v-if="activeTweets.length === 0" class="empty-feed">
             <span class="muted">No tweets yet.</span>
           </div>
         </div>
@@ -117,10 +139,10 @@
       <div class="panel reddit-panel">
         <div class="panel-header">
           <span class="panel-title platform-reddit">&#9673; Reddit</span>
-          <span class="tag">{{ redditPosts.length }} posts</span>
+          <span class="tag">{{ activeRedditPosts.length }} posts</span>
         </div>
         <div class="reddit-list">
-          <div v-for="(post, i) in redditPosts.slice(0, 20)" :key="i" class="reddit-item">
+          <div v-for="(post, i) in activeRedditPosts.slice(0, 20)" :key="i" class="reddit-item">
             <div class="reddit-votes">
               <span class="vote-arrow up">&#9650;</span>
               <span class="vote-score" :class="{ positive: (post.score || post.upvotes || 0) > 0 }">
@@ -145,7 +167,7 @@
               </div>
             </div>
           </div>
-          <div v-if="redditPosts.length === 0" class="empty-feed">
+          <div v-if="activeRedditPosts.length === 0" class="empty-feed">
             <span class="muted">No reddit posts yet.</span>
           </div>
         </div>
@@ -165,7 +187,12 @@
             <svg ref="chart"></svg>
           </div>
           <div class="leaderboard">
-            <div class="leaderboard-title">Top Traders (P&amp;L)</div>
+            <div class="leaderboard-title">
+              Top Traders (P&amp;L)
+              <span v-if="counterfactualMode" class="leaderboard-universe">
+                {{ activeUniverse === 'baseline' ? 'Baseline' : 'Counterfactual' }}
+              </span>
+            </div>
             <div
               v-for="(trader, i) in topTraders"
               :key="i"
@@ -206,6 +233,7 @@ export default {
       currentRound: 0,
       totalRounds: 0,
       simulatedTime: '---',
+      // Baseline data
       actions: [],
       tweets: [],
       redditPosts: [],
@@ -214,6 +242,19 @@ export default {
       currentYesPrice: null,
       initialPriceSet: false,
       portfolios: [],
+      // Counterfactual data
+      counterfactualMode: false,
+      fictionalEvent: '',
+      eventRound: 0,
+      activeUniverse: 'baseline',
+      cfActions: [],
+      cfTweets: [],
+      cfRedditPosts: [],
+      cfPriceHistory: [],
+      cfCurrentYesPrice: null,
+      cfInitialPriceSet: false,
+      cfPortfolios: [],
+      // UI state
       paused: false,
       error: null,
       pollTimer: null,
@@ -245,11 +286,36 @@ export default {
     isFinished() {
       return this.runStatus === 'completed' || this.runStatus === 'stopped'
     },
+    // Active universe data (toggled by user in CF mode)
+    activeActions() {
+      if (this.counterfactualMode && this.activeUniverse === 'counterfactual') {
+        return this.cfActions
+      }
+      return this.actions
+    },
+    activeTweets() {
+      if (this.counterfactualMode && this.activeUniverse === 'counterfactual') {
+        return this.cfTweets
+      }
+      return this.tweets
+    },
+    activeRedditPosts() {
+      if (this.counterfactualMode && this.activeUniverse === 'counterfactual') {
+        return this.cfRedditPosts
+      }
+      return this.redditPosts
+    },
+    activePortfolios() {
+      if (this.counterfactualMode && this.activeUniverse === 'counterfactual') {
+        return this.cfPortfolios
+      }
+      return this.portfolios
+    },
     displayActions() {
-      return [...this.actions].reverse()
+      return [...this.activeActions].reverse()
     },
     topTraders() {
-      return [...this.portfolios]
+      return [...this.activePortfolios]
         .sort((a, b) => (b.pnl || 0) - (a.pnl || 0))
         .slice(0, 8)
     },
@@ -268,12 +334,24 @@ export default {
         this.config = res.data
         this.totalRounds = this.config.num_rounds || this.config.max_rounds || 0
 
+        // Detect counterfactual mode
+        if (this.config.counterfactual_mode) {
+          this.counterfactualMode = true
+          this.fictionalEvent = this.config.fictional_event || ''
+          this.eventRound = this.config.event_round || 0
+        }
+
         // Set initial YES price from config so the chart starts at the real price
         const initProb = this.config?.events?.market_initial_probability
         if (initProb != null && !this.initialPriceSet) {
           this.currentYesPrice = initProb
           this.priceHistory = [{ round: 0, price: initProb }]
           this.initialPriceSet = true
+          if (this.counterfactualMode) {
+            this.cfCurrentYesPrice = initProb
+            this.cfPriceHistory = [{ round: 0, price: initProb }]
+            this.cfInitialPriceSet = true
+          }
         }
       } catch (e) {
         console.error('Failed to load config:', e)
@@ -294,86 +372,46 @@ export default {
         this.totalRounds = data.total_rounds || this.totalRounds
         this.simulatedTime = data.simulated_time || data.sim_time || this.formatSimTime(this.currentRound)
 
-        // Merge new actions
+        if (data.counterfactual_mode) {
+          this.counterfactualMode = true
+          this.fictionalEvent = data.fictional_event || this.fictionalEvent
+          this.eventRound = data.event_round ?? this.eventRound
+        }
+
+        // --- Baseline data ---
         if (data.actions && data.actions.length > 0) {
-          this.mergeActions(data.actions)
+          this.mergeActions(data.actions, 'baseline')
         }
         if (data.recent_actions && data.recent_actions.length > 0) {
-          this.mergeActions(data.recent_actions)
+          this.mergeActions(data.recent_actions, 'baseline')
         }
 
-        // Update platform feeds
-        if (data.twitter) {
-          this.tweets = data.twitter.posts || data.twitter.tweets || this.tweets
-        }
-        if (data.tweets) {
-          this.tweets = data.tweets
-        }
-
-        if (data.reddit) {
-          this.redditPosts = data.reddit.posts || this.redditPosts
-        }
-        if (data.reddit_posts) {
-          this.redditPosts = data.reddit_posts
-        }
+        if (data.tweets) this.tweets = data.tweets
+        if (data.reddit_posts) this.redditPosts = data.reddit_posts
 
         if (data.polymarket) {
-          const pm = data.polymarket
-          if (pm.yes_price != null) {
-            this.currentYesPrice = pm.yes_price
+          this._updatePolymarketData(data.polymarket, 'baseline')
+        }
+
+        // --- Counterfactual data ---
+        if (this.counterfactualMode) {
+          if (data.cf_actions && data.cf_actions.length > 0) {
+            this.mergeActions(data.cf_actions, 'counterfactual')
           }
-          // Use backend price_history if provided (includes initial price)
-          if (pm.price_history && pm.price_history.length > 0) {
-            this.priceHistory = pm.price_history
+          if (data.cf_recent_actions && data.cf_recent_actions.length > 0) {
+            this.mergeActions(data.cf_recent_actions, 'counterfactual')
           }
-          if (pm.real_price_history && pm.real_price_history.length > 0) {
-            this.realPriceHistory = pm.real_price_history
-          }
-          // Set initial price from backend if we haven't yet
-          if (pm.initial_price != null && !this.initialPriceSet) {
-            this.currentYesPrice = this.currentYesPrice || pm.initial_price
-            if (this.priceHistory.length === 0) {
-              this.priceHistory = [{ round: 0, price: pm.initial_price }]
-            }
-            this.initialPriceSet = true
-          }
-          if (pm.portfolios) {
-            this.portfolios = pm.portfolios
-          }
-          if (pm.leaderboard) {
-            this.portfolios = pm.leaderboard
+
+          if (data.cf_tweets) this.cfTweets = data.cf_tweets
+          if (data.cf_reddit_posts) this.cfRedditPosts = data.cf_reddit_posts
+
+          if (data.cf_polymarket) {
+            this._updatePolymarketData(data.cf_polymarket, 'counterfactual')
           }
         }
 
-        // Fallback: build price history incrementally if backend didn't provide it
-        if (this.currentRound > this.lastSeenRound) {
-          if (this.currentYesPrice != null) {
-            const existing = this.priceHistory.find(p => p.round === this.currentRound)
-            if (!existing) {
-              this.priceHistory.push({
-                round: this.currentRound,
-                price: this.currentYesPrice,
-              })
-            }
-          }
-          this.lastSeenRound = this.currentRound
-        }
-
-        // Extract tweets/reddit from actions if not provided separately
-        const tweetActions = ['post', 'tweet', 'create_post', 'quote_post']
-        const redditActions = ['post', 'create_post', 'create_comment']
-        if (!data.twitter && !data.tweets) {
-          this.tweets = this.actions
-            .filter(a => a.platform === 'twitter' && tweetActions.includes(a.action_type || a.action))
-            .map(a => ({ ...a, author: a.agent_name, text: a.content }))
-            .slice(-30)
-        }
-        if (!data.reddit && !data.reddit_posts) {
-          this.redditPosts = this.actions
-            .filter(a => a.platform === 'reddit' && redditActions.includes(a.action_type || a.action))
-            .map(a => ({ ...a, author: a.agent_name, title: a.content, text: a.content }))
-            .slice(-20)
-        }
+        // Fallback: extract tweets/reddit from actions if not provided
+        this._fallbackExtractFeeds(data)
 
         this.renderChart()
 
@@ -386,12 +424,62 @@ export default {
         console.error('Poll error:', e)
       }
     },
-    mergeActions(newActions) {
-      const existingIds = new Set(this.actions.map(a => a.action_id || `${a.round}-${a.agent_id}-${a.platform}-${a.action}-${a.timestamp || ''}`))
+    _updatePolymarketData(pm, universe) {
+      const isCf = universe === 'counterfactual'
+
+      if (pm.yes_price != null) {
+        if (isCf) this.cfCurrentYesPrice = pm.yes_price
+        else this.currentYesPrice = pm.yes_price
+      }
+
+      if (pm.price_history && pm.price_history.length > 0) {
+        if (isCf) this.cfPriceHistory = pm.price_history
+        else this.priceHistory = pm.price_history
+      }
+
+      if (!isCf && pm.real_price_history && pm.real_price_history.length > 0) {
+        this.realPriceHistory = pm.real_price_history
+      }
+
+      const initSet = isCf ? 'cfInitialPriceSet' : 'initialPriceSet'
+      if (pm.initial_price != null && !this[initSet]) {
+        const priceKey = isCf ? 'cfCurrentYesPrice' : 'currentYesPrice'
+        const histKey = isCf ? 'cfPriceHistory' : 'priceHistory'
+        this[priceKey] = this[priceKey] || pm.initial_price
+        if (this[histKey].length === 0) {
+          this[histKey] = [{ round: 0, price: pm.initial_price }]
+        }
+        this[initSet] = true
+      }
+
+      if (pm.portfolios || pm.leaderboard) {
+        if (isCf) this.cfPortfolios = pm.portfolios || pm.leaderboard
+        else this.portfolios = pm.portfolios || pm.leaderboard
+      }
+    },
+    _fallbackExtractFeeds(data) {
+      const tweetActions = ['post', 'tweet', 'create_post', 'quote_post']
+      const redditActions = ['post', 'create_post', 'create_comment']
+      if (!data.tweets) {
+        this.tweets = this.actions
+          .filter(a => a.platform === 'twitter' && tweetActions.includes(a.action_type || a.action))
+          .map(a => ({ ...a, author: a.agent_name, text: a.content }))
+          .slice(-30)
+      }
+      if (!data.reddit_posts) {
+        this.redditPosts = this.actions
+          .filter(a => a.platform === 'reddit' && redditActions.includes(a.action_type || a.action))
+          .map(a => ({ ...a, author: a.agent_name, title: a.content, text: a.content }))
+          .slice(-20)
+      }
+    },
+    mergeActions(newActions, universe) {
+      const target = universe === 'counterfactual' ? this.cfActions : this.actions
+      const existingIds = new Set(target.map(a => a.action_id || `${a.round}-${a.agent_id}-${a.platform}-${a.action}-${a.timestamp || ''}`))
       for (const action of newActions) {
         const id = action.action_id || `${action.round}-${action.agent_id}-${action.platform}-${action.action}-${action.timestamp || ''}`
         if (!existingIds.has(id)) {
-          this.actions.push(action)
+          target.push(action)
           existingIds.add(id)
         }
       }
@@ -399,8 +487,19 @@ export default {
     renderChart() {
       const container = this.$refs.chartContainer
       const svgEl = this.$refs.chart
-      if (!container || !svgEl || this.priceHistory.length < 1) return
+      if (!container || !svgEl) return
 
+      // In counterfactual mode, render dual-universe chart
+      if (this.counterfactualMode) {
+        this._renderDualUniverseChart(container, svgEl)
+        return
+      }
+
+      // Standard single-universe chart
+      if (this.priceHistory.length < 1) return
+      this._renderSingleChart(container, svgEl)
+    },
+    _renderSingleChart(container, svgEl) {
       const width = container.clientWidth || 400
       const height = container.clientHeight || 200
       const margin = { top: 12, right: 16, bottom: 28, left: 40 }
@@ -420,6 +519,198 @@ export default {
       const x = d3.scaleLinear().domain(xDomain).range([0, innerW])
       const y = d3.scaleLinear().domain([0, 1]).range([innerH, 0])
 
+      this._drawChartGrid(g, x, y, innerW, innerH)
+
+      const line = d3.line()
+        .x(d => x(d.round))
+        .y(d => y(d.price))
+        .curve(d3.curveMonotoneX)
+
+      // Area under simulated line
+      const area = d3.area()
+        .x(d => x(d.round))
+        .y0(innerH)
+        .y1(d => y(d.price))
+        .curve(d3.curveMonotoneX)
+
+      g.append('path')
+        .datum(this.priceHistory)
+        .attr('d', area)
+        .attr('fill', 'rgba(255, 107, 26, 0.08)')
+
+      g.append('path')
+        .datum(this.priceHistory)
+        .attr('d', line)
+        .attr('fill', 'none')
+        .attr('stroke', '#FF6B1A')
+        .attr('stroke-width', 2)
+
+      if (this.priceHistory.length > 0) {
+        const last = this.priceHistory[this.priceHistory.length - 1]
+        g.append('circle')
+          .attr('cx', x(last.round))
+          .attr('cy', y(last.price))
+          .attr('r', 4)
+          .attr('fill', '#FF6B1A')
+          .attr('stroke', '#0A0A0A')
+          .attr('stroke-width', 2)
+      }
+
+      if (this.realPriceHistory.length > 0) {
+        g.append('path')
+          .datum(this.realPriceHistory)
+          .attr('d', line)
+          .attr('fill', 'none')
+          .attr('stroke', '#00D4FF')
+          .attr('stroke-width', 2)
+          .attr('stroke-dasharray', '6,3')
+
+        const lastReal = this.realPriceHistory[this.realPriceHistory.length - 1]
+        g.append('circle')
+          .attr('cx', x(lastReal.round))
+          .attr('cy', y(lastReal.price))
+          .attr('r', 4)
+          .attr('fill', '#00D4FF')
+          .attr('stroke', '#0A0A0A')
+          .attr('stroke-width', 2)
+      }
+
+      g.append('text')
+        .attr('transform', 'rotate(-90)')
+        .attr('x', -innerH / 2).attr('y', -30)
+        .attr('fill', '#666').attr('text-anchor', 'middle')
+        .style('font-size', '10px')
+        .text('YES Price')
+    },
+    _renderDualUniverseChart(container, svgEl) {
+      const width = container.clientWidth || 400
+      const height = container.clientHeight || 200
+      const margin = { top: 12, right: 16, bottom: 28, left: 40 }
+      const innerW = width - margin.left - margin.right
+      const innerH = height - margin.top - margin.bottom
+      if (innerW <= 0 || innerH <= 0) return
+
+      const svg = d3.select(svgEl)
+      svg.attr('viewBox', `0 0 ${width} ${height}`)
+        .attr('preserveAspectRatio', 'xMidYMid meet')
+      svg.selectAll('*').remove()
+
+      const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`)
+
+      const allPoints = [...this.priceHistory, ...this.cfPriceHistory]
+      if (allPoints.length === 0) return
+
+      const xDomain = [0, Math.max(this.totalRounds, d3.max(allPoints, d => d.round) || 1)]
+      const x = d3.scaleLinear().domain(xDomain).range([0, innerW])
+      const y = d3.scaleLinear().domain([0, 1]).range([innerH, 0])
+
+      this._drawChartGrid(g, x, y, innerW, innerH)
+
+      const line = d3.line()
+        .x(d => x(d.round))
+        .y(d => y(d.price))
+        .curve(d3.curveMonotoneX)
+
+      // Event injection marker (vertical dashed line)
+      if (this.eventRound > 0 && this.eventRound <= this.totalRounds) {
+        const ex = x(this.eventRound)
+        g.append('line')
+          .attr('x1', ex).attr('x2', ex)
+          .attr('y1', 0).attr('y2', innerH)
+          .attr('stroke', '#FFD700')
+          .attr('stroke-width', 1.5)
+          .attr('stroke-dasharray', '4,4')
+          .attr('opacity', 0.7)
+
+        g.append('text')
+          .attr('x', ex + 4).attr('y', 10)
+          .attr('fill', '#FFD700')
+          .style('font-size', '9px')
+          .style('font-weight', '700')
+          .text('EVENT')
+      }
+
+      // Baseline line (orange solid)
+      if (this.priceHistory.length > 0) {
+        const area = d3.area()
+          .x(d => x(d.round))
+          .y0(innerH)
+          .y1(d => y(d.price))
+          .curve(d3.curveMonotoneX)
+
+        g.append('path')
+          .datum(this.priceHistory)
+          .attr('d', area)
+          .attr('fill', 'rgba(255, 107, 26, 0.06)')
+
+        g.append('path')
+          .datum(this.priceHistory)
+          .attr('d', line)
+          .attr('fill', 'none')
+          .attr('stroke', '#FF6B1A')
+          .attr('stroke-width', 2)
+
+        const last = this.priceHistory[this.priceHistory.length - 1]
+        g.append('circle')
+          .attr('cx', x(last.round))
+          .attr('cy', y(last.price))
+          .attr('r', 4)
+          .attr('fill', '#FF6B1A')
+          .attr('stroke', '#0A0A0A')
+          .attr('stroke-width', 2)
+      }
+
+      // Counterfactual line (cyan dashed)
+      if (this.cfPriceHistory.length > 0) {
+        g.append('path')
+          .datum(this.cfPriceHistory)
+          .attr('d', line)
+          .attr('fill', 'none')
+          .attr('stroke', '#00D4FF')
+          .attr('stroke-width', 2)
+          .attr('stroke-dasharray', '6,3')
+
+        const lastCf = this.cfPriceHistory[this.cfPriceHistory.length - 1]
+        g.append('circle')
+          .attr('cx', x(lastCf.round))
+          .attr('cy', y(lastCf.price))
+          .attr('r', 4)
+          .attr('fill', '#00D4FF')
+          .attr('stroke', '#0A0A0A')
+          .attr('stroke-width', 2)
+      }
+
+      // Y-axis label
+      g.append('text')
+        .attr('transform', 'rotate(-90)')
+        .attr('x', -innerH / 2).attr('y', -30)
+        .attr('fill', '#666').attr('text-anchor', 'middle')
+        .style('font-size', '10px')
+        .text('YES Price')
+
+      // Legend
+      const legend = g.append('g').attr('transform', `translate(${innerW - 160}, 4)`)
+
+      legend.append('line')
+        .attr('x1', 0).attr('x2', 16)
+        .attr('y1', 6).attr('y2', 6)
+        .attr('stroke', '#FF6B1A').attr('stroke-width', 2)
+      legend.append('text')
+        .attr('x', 20).attr('y', 10)
+        .attr('fill', '#888').style('font-size', '10px')
+        .text('Baseline')
+
+      legend.append('line')
+        .attr('x1', 0).attr('x2', 16)
+        .attr('y1', 22).attr('y2', 22)
+        .attr('stroke', '#00D4FF').attr('stroke-width', 2)
+        .attr('stroke-dasharray', '6,3')
+      legend.append('text')
+        .attr('x', 20).attr('y', 26)
+        .attr('fill', '#888').style('font-size', '10px')
+        .text('Counterfactual')
+    },
+    _drawChartGrid(g, x, y, innerW, innerH) {
       // Grid lines
       g.append('g')
         .attr('class', 'grid')
@@ -449,96 +740,6 @@ export default {
         .call(d3.axisLeft(y).ticks(5).tickFormat(d3.format('.2f')))
         .selectAll('text').attr('fill', '#666').style('font-size', '10px')
       g.selectAll('.domain, .tick line').attr('stroke', '#333')
-
-      const line = d3.line()
-        .x(d => x(d.round))
-        .y(d => y(d.price))
-        .curve(d3.curveMonotoneX)
-
-      // Area under simulated line
-      const area = d3.area()
-        .x(d => x(d.round))
-        .y0(innerH)
-        .y1(d => y(d.price))
-        .curve(d3.curveMonotoneX)
-
-      g.append('path')
-        .datum(this.priceHistory)
-        .attr('d', area)
-        .attr('fill', 'rgba(255, 107, 26, 0.08)')
-
-      // Simulated price line (orange)
-      g.append('path')
-        .datum(this.priceHistory)
-        .attr('d', line)
-        .attr('fill', 'none')
-        .attr('stroke', '#FF6B1A')
-        .attr('stroke-width', 2)
-
-      // Current simulated price dot
-      if (this.priceHistory.length > 0) {
-        const last = this.priceHistory[this.priceHistory.length - 1]
-        g.append('circle')
-          .attr('cx', x(last.round))
-          .attr('cy', y(last.price))
-          .attr('r', 4)
-          .attr('fill', '#FF6B1A')
-          .attr('stroke', '#0A0A0A')
-          .attr('stroke-width', 2)
-      }
-
-      // Real price line (cyan), only if data exists
-      if (this.realPriceHistory.length > 0) {
-        g.append('path')
-          .datum(this.realPriceHistory)
-          .attr('d', line)
-          .attr('fill', 'none')
-          .attr('stroke', '#00D4FF')
-          .attr('stroke-width', 2)
-          .attr('stroke-dasharray', '6,3')
-
-        // Current real price dot
-        const lastReal = this.realPriceHistory[this.realPriceHistory.length - 1]
-        g.append('circle')
-          .attr('cx', x(lastReal.round))
-          .attr('cy', y(lastReal.price))
-          .attr('r', 4)
-          .attr('fill', '#00D4FF')
-          .attr('stroke', '#0A0A0A')
-          .attr('stroke-width', 2)
-      }
-
-      // Y-axis label
-      g.append('text')
-        .attr('transform', 'rotate(-90)')
-        .attr('x', -innerH / 2).attr('y', -30)
-        .attr('fill', '#666').attr('text-anchor', 'middle')
-        .style('font-size', '10px')
-        .text('YES Price')
-
-      // Legend (only show if real price data exists)
-      if (this.realPriceHistory.length > 0) {
-        const legend = g.append('g').attr('transform', `translate(${innerW - 120}, 4)`)
-
-        legend.append('line')
-          .attr('x1', 0).attr('x2', 16)
-          .attr('y1', 6).attr('y2', 6)
-          .attr('stroke', '#FF6B1A').attr('stroke-width', 2)
-        legend.append('text')
-          .attr('x', 20).attr('y', 10)
-          .attr('fill', '#888').style('font-size', '10px')
-          .text('Simulated')
-
-        legend.append('line')
-          .attr('x1', 0).attr('x2', 16)
-          .attr('y1', 22).attr('y2', 22)
-          .attr('stroke', '#00D4FF').attr('stroke-width', 2)
-          .attr('stroke-dasharray', '6,3')
-        legend.append('text')
-          .attr('x', 20).attr('y', 26)
-          .attr('fill', '#888').style('font-size', '10px')
-          .text('Real')
-      }
     },
     async handlePause() {
       try {
@@ -656,6 +857,12 @@ export default {
   flex-shrink: 0;
 }
 
+.tag-cf {
+  background: rgba(0, 212, 255, 0.12);
+  color: #00D4FF;
+  border-color: rgba(0, 212, 255, 0.3);
+}
+
 .status-loading { color: var(--muted); }
 .status-running { color: var(--accent); border-color: var(--accent); animation: pulse-border 2s infinite; }
 .status-completed { color: var(--primary); border-color: var(--primary); }
@@ -671,6 +878,55 @@ export default {
 .btn-danger:hover {
   background: #c53030;
   border-color: #c53030;
+}
+
+/* Counterfactual banner */
+.cf-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  background: rgba(255, 215, 0, 0.06);
+  border-bottom: 1px solid rgba(255, 215, 0, 0.2);
+  font-size: 12px;
+}
+.cf-banner-label {
+  color: #FFD700;
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+.cf-banner-text {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Universe toggle bar */
+.universe-toggle-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.toggle-label {
+  color: var(--muted);
+  font-size: 11px;
+}
+.btn-sm {
+  padding: 2px 10px;
+  font-size: 11px;
+  min-height: auto;
+}
+.btn-active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--background);
 }
 
 .error-banner {
@@ -774,7 +1030,6 @@ export default {
 .twitter-panel {
   grid-column: 2;
 }
-.platform-twitter { color: #1DA1F2; }
 .tweet-list {
   flex: 1;
   overflow-y: auto;
@@ -823,7 +1078,6 @@ export default {
 .reddit-panel {
   grid-column: 2;
 }
-.platform-reddit { color: #FF4500; }
 .reddit-list {
   flex: 1;
   overflow-y: auto;
@@ -961,6 +1215,15 @@ export default {
   letter-spacing: 0.5px;
   padding: var(--space-1) var(--space-2);
   border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.leaderboard-universe {
+  font-size: 9px;
+  color: #00D4FF;
+  text-transform: none;
+  letter-spacing: 0;
 }
 .trader-row {
   display: flex;

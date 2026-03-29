@@ -174,13 +174,76 @@ def prepare_simulation():
                     "be LLM-generated or default 0.5"
                 )
 
-            sim_config = config_gen.generate(
-                profiles=[asdict(p) for p in stakeholders + crowd],
-                simulation_requirement=state.simulation_requirement,
-                max_rounds=config.default_max_rounds,
-                polymarket_config=polymarket_config,
+            is_counterfactual = (
+                polymarket_config
+                and polymarket_config.get("counterfactual")
+                and polymarket_config.get("fictional_event")
             )
-            sm.save_config(simulation_id, sim_config)
+
+            if is_counterfactual:
+                import copy
+                import json as _json
+                import shutil
+
+                # Generate ONE base config without the fictional event
+                # so both universes share the same agents, time, platform settings.
+                baseline_pm = dict(polymarket_config)
+                baseline_pm.pop("fictional_event", None)
+                baseline_pm.pop("event_round", None)
+                baseline_config = config_gen.generate(
+                    profiles=[asdict(p) for p in stakeholders + crowd],
+                    simulation_requirement=state.simulation_requirement,
+                    max_rounds=config.default_max_rounds,
+                    polymarket_config=baseline_pm,
+                )
+
+                # Deep-copy the baseline and inject the fictional event
+                # so the only difference is the scheduled event.
+                cf_config = copy.deepcopy(baseline_config)
+                fictional = polymarket_config.get("fictional_event", "")
+                event_round = polymarket_config.get("event_round", 5)
+                if fictional:
+                    scheduled = cf_config.get("events", {}).get("scheduled_events", [])
+                    scheduled.append({
+                        "round": event_round,
+                        "description": fictional,
+                        "platforms": ["twitter", "reddit", "polymarket"],
+                    })
+                    cf_config.setdefault("events", {})["scheduled_events"] = scheduled
+
+                # Save a wrapper config that references both
+                sim_config = {
+                    "counterfactual_mode": True,
+                    "event_round": event_round,
+                    "fictional_event": fictional,
+                    "max_rounds": config.default_max_rounds,
+                    "baseline": baseline_config,
+                    "counterfactual": cf_config,
+                }
+                sm.save_config(simulation_id, sim_config)
+
+                # Also save individual configs in subdirectories
+                sim_dir = sm.get_sim_dir(simulation_id)
+                for sub in ("baseline", "counterfactual"):
+                    sub_dir = os.path.join(sim_dir, sub)
+                    os.makedirs(sub_dir, exist_ok=True)
+                    sub_cfg = sim_config[sub]
+                    with open(os.path.join(sub_dir, "simulation_config.json"), "w") as f:
+                        _json.dump(sub_cfg, f, indent=2)
+                    # Copy profile files into subdirectories
+                    for platform in ("twitter", "reddit", "polymarket", "all"):
+                        src_path = os.path.join(sim_dir, f"{platform}_profiles.json")
+                        if os.path.exists(src_path):
+                            shutil.copy2(src_path, os.path.join(sub_dir, f"{platform}_profiles.json"))
+            else:
+                sim_config = config_gen.generate(
+                    profiles=[asdict(p) for p in stakeholders + crowd],
+                    simulation_requirement=state.simulation_requirement,
+                    max_rounds=config.default_max_rounds,
+                    polymarket_config=polymarket_config,
+                )
+                sm.save_config(simulation_id, sim_config)
+
             state.config_generated = True
 
             state.status = "prepared"
@@ -233,14 +296,28 @@ def start_simulation():
     if not state.config_generated:
         return jsonify({"error": "Simulation not prepared yet. Config not generated."}), 400
 
-    # Start simulation subprocess
+    # Start simulation subprocess(es)
     from app.services.simulation_runner import SimulationRunner
     try:
-        SimulationRunner.start_simulation(
-            simulation_id=simulation_id,
-            sim_dir=sm.get_sim_dir(simulation_id),
-            config=config,
-        )
+        sim_dir = sm.get_sim_dir(simulation_id)
+        sim_config = sm.load_config(simulation_id)
+
+        if sim_config and sim_config.get("counterfactual_mode"):
+            # Forked simulation: start baseline and counterfactual as separate subprocesses
+            for universe in ("baseline", "counterfactual"):
+                sub_dir = os.path.join(sim_dir, universe)
+                sub_sim_id = f"{simulation_id}__{universe}"
+                SimulationRunner.start_simulation(
+                    simulation_id=sub_sim_id,
+                    sim_dir=sub_dir,
+                    config=config,
+                )
+        else:
+            SimulationRunner.start_simulation(
+                simulation_id=simulation_id,
+                sim_dir=sim_dir,
+                config=config,
+            )
         state.status = "running"
         sm.save(state)
         return jsonify({"status": "running", "simulation_id": simulation_id})
@@ -258,9 +335,17 @@ def stop_simulation():
         return jsonify({"error": "simulation_id required"}), 400
 
     from app.services.simulation_runner import SimulationRunner
-    SimulationRunner.stop_simulation(simulation_id)
 
+    # Check if forked simulation
     sm = SimulationManager(config)
+    sim_config = sm.load_config(simulation_id)
+    if sim_config and sim_config.get("counterfactual_mode"):
+        for universe in ("baseline", "counterfactual"):
+            sub_sim_id = f"{simulation_id}__{universe}"
+            SimulationRunner.stop_simulation(sub_sim_id)
+    else:
+        SimulationRunner.stop_simulation(simulation_id)
+
     state = sm.load(simulation_id)
     if state:
         state.status = "stopped"
@@ -300,6 +385,19 @@ def pause_simulation():
         return jsonify({"error": "simulation_id required"}), 400
 
     simulation_id = _resolve_sim_id(simulation_id)
+
+    # Check if forked simulation
+    config = _get_config()
+    sm = SimulationManager(config)
+    sim_config = sm.load_config(simulation_id)
+    if sim_config and sim_config.get("counterfactual_mode"):
+        import signal as sig
+        for universe in ("baseline", "counterfactual"):
+            pid = _get_sim_pid(f"{simulation_id}__{universe}")
+            if pid is not None:
+                os.kill(pid, sig.SIGUSR1)
+        return jsonify({"status": "paused", "simulation_id": simulation_id})
+
     pid = _get_sim_pid(simulation_id)
     if pid is None:
         return jsonify({"error": "Simulation not running"}), 404
@@ -317,6 +415,19 @@ def resume_simulation():
         return jsonify({"error": "simulation_id required"}), 400
 
     simulation_id = _resolve_sim_id(simulation_id)
+
+    # Check if forked simulation
+    config = _get_config()
+    sm = SimulationManager(config)
+    sim_config = sm.load_config(simulation_id)
+    if sim_config and sim_config.get("counterfactual_mode"):
+        import signal as sig
+        for universe in ("baseline", "counterfactual"):
+            pid = _get_sim_pid(f"{simulation_id}__{universe}")
+            if pid is not None:
+                os.kill(pid, sig.SIGUSR2)
+        return jsonify({"status": "running", "simulation_id": simulation_id})
+
     pid = _get_sim_pid(simulation_id)
     if pid is None:
         return jsonify({"error": "Simulation not running"}), 404
@@ -332,14 +443,92 @@ def get_run_status(simulation_id):
     config = _get_config()
     sm = SimulationManager(config)
     sim_dir = sm.get_sim_dir(simulation_id)
+
+    # Check if this is a counterfactual (forked) simulation
+    sim_config = sm.load_config(simulation_id)
+    if sim_config and sim_config.get("counterfactual_mode"):
+        return _get_forked_run_status(simulation_id, sim_dir, sm, sim_config)
+
     from app.services.simulation_runner import SimulationRunner
     from app.services.simulation_ipc import get_posts_from_db
     state = SimulationRunner.get_run_state(simulation_id, sim_dir)
     if not state:
         return jsonify({"error": "No run state found"}), 404
 
-    # Include live posts + comments from SQLite.
-    # Posts are returned newest-first; we reverse for display.
+    _enrich_state_with_platform_data(state, sim_dir, simulation_id, sm)
+    return jsonify(state)
+
+
+def _get_forked_run_status(simulation_id, sim_dir, sm, sim_config):
+    """Get run status for a forked (counterfactual) simulation.
+
+    Returns data for both baseline and counterfactual universes.
+    """
+    from app.services.simulation_runner import SimulationRunner
+
+    baseline_dir = os.path.join(sim_dir, "baseline")
+    cf_dir = os.path.join(sim_dir, "counterfactual")
+
+    baseline_id = f"{simulation_id}__baseline"
+    cf_id = f"{simulation_id}__counterfactual"
+
+    baseline_state = SimulationRunner.get_run_state(baseline_id, baseline_dir)
+    cf_state = SimulationRunner.get_run_state(cf_id, cf_dir)
+
+    # Enrich both with platform data
+    _enrich_state_with_platform_data(baseline_state, baseline_dir, baseline_id, sm, sim_id_for_config=simulation_id)
+    _enrich_state_with_platform_data(cf_state, cf_dir, cf_id, sm, sim_id_for_config=simulation_id)
+
+    # Determine overall status
+    b_status = baseline_state.get("status", "unknown")
+    c_status = cf_state.get("status", "unknown")
+    if b_status == "running" or c_status == "running":
+        overall_status = "running"
+    elif b_status == "completed" and c_status == "completed":
+        overall_status = "completed"
+    elif b_status == "failed" or c_status == "failed":
+        overall_status = "failed"
+    else:
+        overall_status = b_status
+
+    b_rounds = baseline_state.get("rounds_completed", 0)
+    c_rounds = cf_state.get("rounds_completed", 0)
+    total_rounds = sim_config.get("max_rounds", 10)
+
+    return jsonify({
+        "status": overall_status,
+        "counterfactual_mode": True,
+        "fictional_event": sim_config.get("fictional_event", ""),
+        "event_round": sim_config.get("event_round", 0),
+        "total_rounds": total_rounds,
+        "rounds_completed": min(b_rounds, c_rounds),
+        "simulated_time": baseline_state.get("simulated_time", ""),
+        # Baseline universe data — use as default view
+        "actions": baseline_state.get("actions", []),
+        "recent_actions": baseline_state.get("recent_actions", []),
+        "tweets": baseline_state.get("tweets", []),
+        "reddit_posts": baseline_state.get("reddit_posts", []),
+        "polymarket": baseline_state.get("polymarket", {}),
+        # Counterfactual universe data
+        "cf_actions": cf_state.get("actions", []),
+        "cf_recent_actions": cf_state.get("recent_actions", []),
+        "cf_tweets": cf_state.get("tweets", []),
+        "cf_reddit_posts": cf_state.get("reddit_posts", []),
+        "cf_polymarket": cf_state.get("polymarket", {}),
+        # Baseline status details
+        "baseline_status": b_status,
+        "baseline_rounds": b_rounds,
+        "cf_status": c_status,
+        "cf_rounds": c_rounds,
+    })
+
+
+def _enrich_state_with_platform_data(state, sim_dir, simulation_id, sm, sim_id_for_config=None):
+    """Add tweets, reddit posts, and polymarket data to a state dict."""
+    from app.services.simulation_ipc import get_posts_from_db
+    if not state:
+        return
+
     def _format_comment(c):
         return {
             "author": c.get("user_name") or c.get("name") or f"user_{c['user_id']}",
@@ -420,13 +609,11 @@ def get_run_status(simulation_id):
                     pos_value = 0.0
                     for pos in positions:
                         if pos["outcome"] == m["outcome_a"]:
-                            # outcome_a is YES; value = shares * yes_price
                             pos_value += pos["shares"] * yes_price
                         else:
-                            # outcome_b is NO; value = shares * (1 - yes_price)
                             pos_value += pos["shares"] * (1 - yes_price)
                     total_value = t["balance"] + pos_value
-                    pnl = total_value - 1000.0  # initial balance
+                    pnl = total_value - 1000.0
                     leaderboard.append({
                         "agent_id": t["user_id"],
                         "name": t["user_name"] or t["name"] or f"trader_{t['user_id']}",
@@ -438,21 +625,19 @@ def get_run_status(simulation_id):
                 leaderboard.sort(key=lambda x: x["pnl"], reverse=True)
 
                 # Build price history from trade log.
-                # Each trade records the post-trade price; we reconstruct
-                # the per-round price by taking the last trade price per round.
                 price_history = []
                 init_prob = 0.5
                 try:
-                    # Get initial price from sim config
-                    sim_state = sm.load(simulation_id)
-                    sim_cfg = sm.load_config(simulation_id)
+                    cfg_id = sim_id_for_config or simulation_id
+                    sim_cfg = sm.load_config(cfg_id)
                     if sim_cfg:
-                        init_prob = float(
-                            sim_cfg.get("events", {}).get("market_initial_probability", 0.5)
-                        )
+                        # Handle both normal and counterfactual wrapper configs
+                        events = sim_cfg.get("events", {})
+                        if not events and sim_cfg.get("baseline"):
+                            events = sim_cfg["baseline"].get("events", {})
+                        init_prob = float(events.get("market_initial_probability", 0.5))
                     price_history.append({"round": 0, "price": round(init_prob, 4)})
 
-                    # Get per-trade price from the trace table
                     import json as _json
                     traces = pm_conn.execute(
                         "SELECT info FROM trace WHERE action IN ('buy_shares', 'sell_shares') "
@@ -462,7 +647,6 @@ def get_run_status(simulation_id):
                     for tr in traces:
                         try:
                             info = _json.loads(tr["info"])
-                            # new_price_a is YES price (reserve_b / total)
                             p = info.get("new_price_a")
                             if p is not None:
                                 price_history.append({
@@ -475,7 +659,6 @@ def get_run_status(simulation_id):
                 except Exception:
                     pass
 
-                # Always include current price as the last point
                 if not price_history or price_history[-1]["price"] != round(yes_price, 4):
                     price_history.append({
                         "round": state.get("rounds_completed", len(price_history)),
@@ -511,8 +694,6 @@ def get_run_status(simulation_id):
     except Exception:
         pass
 
-    return jsonify(state)
-
 
 @simulation_bp.route("/<simulation_id>/profiles", methods=["GET"])
 def get_profiles(simulation_id):
@@ -532,6 +713,17 @@ def get_config(simulation_id):
     sim_config = sm.load_config(simulation_id)
     if not sim_config:
         return jsonify({"error": "Config not found"}), 404
+
+    # For counterfactual configs, expose a flattened view the frontend can use
+    if sim_config.get("counterfactual_mode"):
+        # Use baseline config as the "main" config but add CF metadata
+        result = dict(sim_config.get("baseline", {}))
+        result["counterfactual_mode"] = True
+        result["fictional_event"] = sim_config.get("fictional_event", "")
+        result["event_round"] = sim_config.get("event_round", 0)
+        result["max_rounds"] = sim_config.get("max_rounds", result.get("max_rounds", 10))
+        return jsonify(result)
+
     return jsonify(sim_config)
 
 

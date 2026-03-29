@@ -7,8 +7,21 @@
         <button class="btn" @click="$router.back()">&#8592; BACK</button>
         <h2 class="page-title">Analysis Report</h2>
         <span class="tag" :class="'status-' + status">{{ status }}</span>
+        <span v-if="counterfactualMode" class="tag tag-cf">COUNTERFACTUAL</span>
       </div>
       <div class="toolbar-right">
+        <template v-if="counterfactualMode">
+          <button
+            class="btn btn-sm"
+            :class="{ 'btn-active': activeUniverse === 'baseline' }"
+            @click="activeUniverse = 'baseline'"
+          >Baseline</button>
+          <button
+            class="btn btn-sm"
+            :class="{ 'btn-active': activeUniverse === 'counterfactual' }"
+            @click="activeUniverse = 'counterfactual'"
+          >Counterfactual</button>
+        </template>
         <button
           v-if="status === 'completed'"
           class="btn btn-primary"
@@ -20,6 +33,17 @@
           :disabled="generating"
           @click="startGeneration"
         >{{ generating ? 'GENERATING...' : 'GENERATE REPORT' }}</button>
+      </div>
+    </div>
+
+    <!-- Counterfactual comparison chart -->
+    <div v-if="counterfactualMode && baselinePriceHistory.length > 0" class="cf-comparison">
+      <div class="cf-comparison-header">
+        <span class="cf-comparison-title">Price Comparison: Baseline vs Counterfactual</span>
+        <span v-if="fictionalEvent" class="cf-event-badge">Event at R{{ eventRound }}: {{ truncate(fictionalEvent, 80) }}</span>
+      </div>
+      <div class="cf-chart-container" ref="cfChartContainer">
+        <svg ref="cfChart"></svg>
       </div>
     </div>
 
@@ -52,8 +76,10 @@
 </template>
 
 <script>
+import * as d3 from 'd3'
 import { marked } from 'marked'
 import { generateReport, getReportStatus, getReport } from '../api/report'
+import { getRunStatus, getConfig } from '../api/simulation'
 
 export default {
   name: 'ReportView',
@@ -66,6 +92,14 @@ export default {
       generating: false,
       taskId: null,
       pollTimer: null,
+      // Counterfactual
+      counterfactualMode: false,
+      activeUniverse: 'baseline',
+      fictionalEvent: '',
+      eventRound: 0,
+      totalRounds: 10,
+      baselinePriceHistory: [],
+      cfPriceHistory: [],
     }
   },
   computed: {
@@ -81,11 +115,129 @@ export default {
   },
   async mounted() {
     await this.checkExisting()
+    await this.loadCounterfactualData()
   },
   beforeUnmount() {
     if (this.pollTimer) clearInterval(this.pollTimer)
   },
   methods: {
+    truncate(text, max) {
+      if (!text) return ''
+      return text.length > max ? text.substring(0, max) + '...' : text
+    },
+    async loadCounterfactualData() {
+      try {
+        const cfgRes = await getConfig(this.reportId)
+        if (cfgRes.data?.counterfactual_mode) {
+          this.counterfactualMode = true
+          this.fictionalEvent = cfgRes.data.fictional_event || ''
+          this.eventRound = cfgRes.data.event_round || 0
+          this.totalRounds = cfgRes.data.max_rounds || 10
+
+          // Fetch final run status to get price histories
+          const statusRes = await getRunStatus(this.reportId)
+          const data = statusRes.data
+          if (data.polymarket?.price_history) {
+            this.baselinePriceHistory = data.polymarket.price_history
+          }
+          if (data.cf_polymarket?.price_history) {
+            this.cfPriceHistory = data.cf_polymarket.price_history
+          }
+          this.$nextTick(() => this.renderCfChart())
+        }
+      } catch {
+        // Non-CF simulation or data not available
+      }
+    },
+    renderCfChart() {
+      const container = this.$refs.cfChartContainer
+      const svgEl = this.$refs.cfChart
+      if (!container || !svgEl) return
+
+      const width = container.clientWidth || 600
+      const height = 200
+      const margin = { top: 12, right: 16, bottom: 28, left: 40 }
+      const innerW = width - margin.left - margin.right
+      const innerH = height - margin.top - margin.bottom
+      if (innerW <= 0 || innerH <= 0) return
+
+      const svg = d3.select(svgEl)
+      svg.attr('viewBox', `0 0 ${width} ${height}`)
+        .attr('preserveAspectRatio', 'xMidYMid meet')
+      svg.selectAll('*').remove()
+
+      const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`)
+
+      const allPoints = [...this.baselinePriceHistory, ...this.cfPriceHistory]
+      if (allPoints.length === 0) return
+
+      const xDomain = [0, Math.max(this.totalRounds, d3.max(allPoints, d => d.round) || 1)]
+      const x = d3.scaleLinear().domain(xDomain).range([0, innerW])
+      const y = d3.scaleLinear().domain([0, 1]).range([innerH, 0])
+
+      // Grid
+      g.selectAll('.grid-line')
+        .data([0.25, 0.5, 0.75])
+        .enter().append('line')
+        .attr('x1', 0).attr('x2', innerW)
+        .attr('y1', d => y(d)).attr('y2', d => y(d))
+        .attr('stroke', '#333').attr('stroke-dasharray', '2,4')
+
+      // Axes
+      g.append('g')
+        .attr('transform', `translate(0,${innerH})`)
+        .call(d3.axisBottom(x).ticks(Math.min(10, this.totalRounds)).tickFormat(d => `R${d}`))
+        .selectAll('text').attr('fill', '#666').style('font-size', '10px')
+      g.selectAll('.domain, .tick line').attr('stroke', '#333')
+      g.append('g')
+        .call(d3.axisLeft(y).ticks(5).tickFormat(d3.format('.2f')))
+        .selectAll('text').attr('fill', '#666').style('font-size', '10px')
+
+      const line = d3.line()
+        .x(d => x(d.round))
+        .y(d => y(d.price))
+        .curve(d3.curveMonotoneX)
+
+      // Event marker
+      if (this.eventRound > 0) {
+        const ex = x(this.eventRound)
+        g.append('line')
+          .attr('x1', ex).attr('x2', ex)
+          .attr('y1', 0).attr('y2', innerH)
+          .attr('stroke', '#FFD700').attr('stroke-width', 1.5)
+          .attr('stroke-dasharray', '4,4').attr('opacity', 0.7)
+        g.append('text')
+          .attr('x', ex + 4).attr('y', 10)
+          .attr('fill', '#FFD700').style('font-size', '9px').style('font-weight', '700')
+          .text('EVENT')
+      }
+
+      // Baseline (orange)
+      if (this.baselinePriceHistory.length > 0) {
+        g.append('path').datum(this.baselinePriceHistory)
+          .attr('d', line).attr('fill', 'none')
+          .attr('stroke', '#FF6B1A').attr('stroke-width', 2)
+      }
+
+      // Counterfactual (cyan dashed)
+      if (this.cfPriceHistory.length > 0) {
+        g.append('path').datum(this.cfPriceHistory)
+          .attr('d', line).attr('fill', 'none')
+          .attr('stroke', '#00D4FF').attr('stroke-width', 2)
+          .attr('stroke-dasharray', '6,3')
+      }
+
+      // Legend
+      const legend = g.append('g').attr('transform', `translate(${innerW - 160}, 4)`)
+      legend.append('line').attr('x1', 0).attr('x2', 16).attr('y1', 6).attr('y2', 6)
+        .attr('stroke', '#FF6B1A').attr('stroke-width', 2)
+      legend.append('text').attr('x', 20).attr('y', 10)
+        .attr('fill', '#888').style('font-size', '10px').text('Baseline')
+      legend.append('line').attr('x1', 0).attr('x2', 16).attr('y1', 22).attr('y2', 22)
+        .attr('stroke', '#00D4FF').attr('stroke-width', 2).attr('stroke-dasharray', '6,3')
+      legend.append('text').attr('x', 20).attr('y', 26)
+        .attr('fill', '#888').style('font-size', '10px').text('Counterfactual')
+    },
     async checkExisting() {
       try {
         const res = await getReport(this.reportId)
@@ -104,7 +256,10 @@ export default {
       this.progress = 0
 
       try {
-        const res = await generateReport({ simulation_id: this.reportId })
+        const res = await generateReport({
+          simulation_id: this.reportId,
+          universe: this.counterfactualMode ? this.activeUniverse : undefined,
+        })
         this.taskId = res.data.task_id
         this.startPolling()
       } catch (e) {
@@ -185,4 +340,58 @@ export default {
 .status-completed { background: var(--accent); color: var(--background); }
 .status-processing { background: var(--primary); color: var(--background); animation: pulse-border 2s infinite; }
 .status-failed { background: var(--danger); color: white; }
+
+.tag-cf {
+  background: rgba(0, 212, 255, 0.12);
+  color: #00D4FF;
+  border-color: rgba(0, 212, 255, 0.3);
+}
+.btn-sm {
+  padding: 2px 10px;
+  font-size: 11px;
+  min-height: auto;
+}
+.btn-active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--background);
+}
+
+.cf-comparison {
+  border-bottom: 1px solid var(--border);
+  padding: var(--space-2) var(--space-3);
+  max-width: 900px;
+  margin: 0 auto;
+  width: 100%;
+}
+.cf-comparison-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-1);
+}
+.cf-comparison-title {
+  font-family: var(--font-display);
+  font-size: 14px;
+  color: var(--primary);
+}
+.cf-event-badge {
+  font-size: 10px;
+  color: #FFD700;
+  background: rgba(255, 215, 0, 0.08);
+  padding: 2px 8px;
+  border-radius: 3px;
+  max-width: 400px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cf-chart-container {
+  height: 200px;
+}
+.cf-chart-container svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
 </style>
