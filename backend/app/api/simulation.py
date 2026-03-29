@@ -110,39 +110,33 @@ def prepare_simulation():
             sm.save(state)
 
             stakeholders = gen.generate_profiles(state.graph_id, task.task_id)
+            logger.info("Generated %d stakeholder profiles from graph", len(stakeholders))
 
             TaskManager.update(task.task_id, progress=50,
                                metadata={"stage": "background_population"})
             stakeholder_names = [p.name for p in stakeholders]
-            background = gen.generate_background_population(
+            crowd = gen.generate_background_population(
                 count=100,
                 simulation_requirement=state.simulation_requirement,
                 stakeholder_names=stakeholder_names,
                 task_id=task.task_id,
             )
-            logger.info(
-                "Generated %d stakeholders + %d background = %d total",
-                len(stakeholders), len(background),
-                len(stakeholders) + len(background),
-            )
+            logger.info("Generated %d crowd profiles", len(crowd))
 
-            all_profiles = stakeholders + background
-
-            # Platform assignment:
-            #   Twitter  = stakeholders (influencers who post takes)
-            #   Reddit   = background people (crowd that discusses and reacts)
-            #              + stakeholders (they lurk/comment occasionally)
+            # Clean platform separation:
+            #   Twitter    = stakeholders only (they post takes that influence opinion)
+            #   Reddit     = crowd only (regular people who discuss and react)
             #   Polymarket = everyone trades
-            twitter_profiles = [p.to_twitter_format() for p in stakeholders]
-            reddit_profiles = [p.to_reddit_format() for p in background + stakeholders]
-            polymarket_profiles = [p.to_polymarket_format() for p in all_profiles]
+            sm.save_profiles(simulation_id,
+                [p.to_twitter_format() for p in stakeholders], "twitter")
+            sm.save_profiles(simulation_id,
+                [p.to_reddit_format() for p in crowd], "reddit")
+            sm.save_profiles(simulation_id,
+                [p.to_polymarket_format() for p in stakeholders + crowd], "polymarket")
+            sm.save_profiles(simulation_id,
+                [asdict(p) for p in stakeholders + crowd], "all")
 
-            sm.save_profiles(simulation_id, twitter_profiles, "twitter")
-            sm.save_profiles(simulation_id, reddit_profiles, "reddit")
-            sm.save_profiles(simulation_id, polymarket_profiles, "polymarket")
-            sm.save_profiles(simulation_id, [asdict(p) for p in all_profiles], "all")
-
-            state.profile_count = len(all_profiles)
+            state.profile_count = len(stakeholders) + len(crowd)
             sm.save(state)
 
             # Generate simulation config (also during prepare, not at start time)
