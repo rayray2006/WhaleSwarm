@@ -57,6 +57,39 @@
           </div>
 
           <template v-if="selectedMarket">
+            <!-- Counterfactual injection (optional) -->
+            <div class="counterfactual-section">
+              <label class="field-label">Counterfactual Injection <span class="optional-tag">(optional)</span></label>
+              <p class="field-hint">
+                Introduce a hypothetical piece of information during the simulation.
+                The simulation will fork into two parallel universes: one baseline (without
+                the info) and one with it, so you can compare outcomes.
+              </p>
+              <div class="cf-fields">
+                <div class="cf-round-field">
+                  <label class="mini-label">Inject at round</label>
+                  <input
+                    v-model.number="cfRound"
+                    type="number"
+                    min="0"
+                    :max="maxRounds"
+                    placeholder="0"
+                    class="cf-round-input"
+                  />
+                  <span class="cf-round-hint">of {{ maxRounds }} total (0 = before start, {{ maxRounds }} = before last round)</span>
+                </div>
+                <div class="cf-info-field">
+                  <label class="mini-label">Information to introduce</label>
+                  <textarea
+                    v-model="cfInfo"
+                    placeholder="e.g., 'Breaking: SEC announces approval of Bitcoin ETF applications...'"
+                    rows="3"
+                    class="cf-textarea"
+                  ></textarea>
+                </div>
+              </div>
+            </div>
+
             <button
               class="btn btn-primary launch-btn"
               :disabled="loading"
@@ -89,6 +122,9 @@ export default {
       loading: false,
       loadingMsg: 'Processing...',
       error: null,
+      maxRounds: 10,
+      cfRound: 0,
+      cfInfo: '',
     }
   },
   methods: {
@@ -136,9 +172,16 @@ export default {
       this.error = null
       this.loadingMsg = 'Researching topic...'
       try {
-        const res = await polymarketSetup({
+        const payload = {
           market: this.selectedMarket,
-        })
+        }
+        // Include counterfactual config if the user provided info text
+        if (this.cfInfo.trim()) {
+          payload.fictional_event = this.cfInfo.trim()
+          payload.event_round = this.cfRound || 0
+          payload.counterfactual = true
+        }
+        const res = await polymarketSetup(payload)
         this.$router.push(`/process/${res.data.project_id}`)
       } catch (e) {
         this.error = e.response?.data?.error || e.message
@@ -337,6 +380,69 @@ export default {
   font-size: 12px;
   text-align: center;
   padding: var(--space-3) 0;
+}
+
+/* ---- Counterfactual ---- */
+.counterfactual-section {
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 107, 26, 0.02);
+}
+
+.optional-tag {
+  font-size: 9px;
+  color: var(--muted);
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.field-hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin-bottom: var(--space-2);
+}
+
+.cf-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.mini-label {
+  display: block;
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+.cf-round-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+}
+
+.cf-round-input {
+  width: 60px;
+  text-align: center;
+}
+
+.cf-round-hint {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.cf-textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 60px;
+  font-size: 12px;
 }
 
 /* ---- Launch ---- */

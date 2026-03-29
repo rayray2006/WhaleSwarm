@@ -237,6 +237,7 @@ def polymarket_setup():
     fictional_event = data.get("fictional_event", "").strip()
     event_round = int(data.get("event_round", 5))
     project_name = data.get("project_name", "").strip()
+    counterfactual = bool(data.get("counterfactual", False))
 
     if not market:
         return jsonify({"error": "market is required"}), 400
@@ -290,6 +291,7 @@ def polymarket_setup():
             "no_price": round(1 - yes_price, 4),
             "fictional_event": fictional_event,
             "event_round": event_round,
+            "counterfactual": counterfactual,
         },
     )
     pm.create(project)
