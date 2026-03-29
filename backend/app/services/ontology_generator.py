@@ -10,22 +10,24 @@ logger = logging.getLogger(__name__)
 ONTOLOGY_SYSTEM_PROMPT = """You are an ontology designer for a social media simulation engine.
 
 Given document text and a simulation requirement, you must design an ontology that defines:
-1. Entity types: 8-10 types of real-world social media actors found in the documents
-2. Edge types: 6-10 relationship types between these actors
+1. Entity types: 15-20 types of real-world social media actors relevant to the simulation
+2. Edge types: 8-15 relationship types between these actors
 
 CRITICAL RULES:
 - Entity types MUST be real-world "accounts" that could plausibly speak on social media
-  GOOD: Student, Professor, CEO, Company, Journalist, Politician, Organization, MediaOutlet
+  GOOD: Student, Professor, CEO, Company, Journalist, Politician, Organization, MediaOutlet, GameDeveloper, MilitaryAnalyst, Diplomat, Influencer, Activist, Researcher, Investor
   BAD: Topic, Viewpoint, Concept, Event, Theory, Policy (these are abstract, not actors)
-- Produce exactly 8-10 entity types: identify the specific types relevant to the documents, plus 1-2 generic fallback types (like "Person" or "Organization")
-- 6-10 relationship types describing connections between entities (WORKS_FOR, ADVISES, COLLABORATES_WITH, etc.)
-- Return a brief analysis summary explaining the document domain
+- Produce 15-20 entity types total. Do NOT stop at the first obvious domain.
+- MULTI-DOMAIN BALANCE: If the simulation requirement or documents reference multiple domains (e.g., geopolitics AND gaming, technology AND regulation, sports AND finance), you MUST include entity types from ALL domains mentioned, not just the dominant one. Allocate types proportionally across every domain referenced.
+- SELECTION QUALITY: First brainstorm ALL possible actor types across every domain in the text, then select the 15-20 most distinct and simulation-relevant types. Prefer specific types (GameDeveloper, MilitaryAnalyst) over generic ones (Person, User). Include 2-3 generic fallback types (Person, Organization, PublicFigure) at the end.
+- 8-15 relationship types describing connections between entities. Include cross-domain relationships where relevant.
+- Return a brief analysis summary identifying ALL domains found and how entity types cover them.
 
 Return JSON in this exact format:
 {
   "entity_types": ["Type1", "Type2", ...],
   "edge_types": ["RELATIONSHIP_1", "RELATIONSHIP_2", ...],
-  "analysis_summary": "Brief description of the document domain and key themes."
+  "analysis_summary": "Brief description listing all domains found and how entity type coverage is balanced across them."
 }"""
 
 
