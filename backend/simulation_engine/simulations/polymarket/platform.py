@@ -22,6 +22,7 @@ from simulation_engine.simulations.base import BasePlatform
 from simulation_engine.simulations.polymarket.amm import (
     TradeResult,
     anchor_to_real_price,
+    compute_k_from_agent_wealth,
     get_price,
     quote_buy,
     quote_sell,
@@ -110,10 +111,12 @@ class PolymarketPlatform(BasePlatform):
         channel: Channel,
         *,
         initial_balance: float = DEFAULT_INITIAL_BALANCE,
+        total_agent_wealth: Optional[float] = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(db_path, channel, **kwargs)
         self.initial_balance = initial_balance
+        self.total_agent_wealth = total_agent_wealth
         self.divergence_tracker = DivergenceTracker()
         self._load_polymarket_schemas()
 
@@ -229,11 +232,13 @@ class PolymarketPlatform(BasePlatform):
 
         # Set up AMM reserves so that:
         #   price_a = reserve_b / (reserve_a + reserve_b) = initial_prob
-        # Liquidity should be large enough relative to agent capital so
-        # that individual trades move the price meaningfully but don't
-        # get rejected by the trade-size cap.  With N agents each
-        # holding ~$1000 and a 10% cap, reserves of ~5000 work well.
-        k = 25_000_000.0  # reserves ~5000 each at 50/50
+        # If total_agent_wealth is known, derive k so that agents can
+        # collectively move the market from 25% to 75%.  Otherwise fall
+        # back to a sensible default.
+        if self.total_agent_wealth and self.total_agent_wealth > 0:
+            k = compute_k_from_agent_wealth(self.total_agent_wealth)
+        else:
+            k = 25_000_000.0  # legacy fallback
         # new_reserve_b = sqrt(k * p / (1 - p))
         reserve_b = math.sqrt(k * initial_prob / (1.0 - initial_prob))
         reserve_a = k / reserve_b

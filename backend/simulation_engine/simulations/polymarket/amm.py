@@ -20,6 +20,18 @@ from dataclasses import dataclass
 MAX_TRADE_FRACTION = 0.10
 
 
+def compute_k_from_agent_wealth(total_agent_wealth: float) -> float:
+    """Derive the AMM liquidity constant ``k`` from total agent wealth.
+
+    The formula ``k = 3 * W**2 / 4`` ensures that if all agents pooled
+    100% of their net worth into one side, they could move the market
+    price from 0.25 to 0.75 (or vice versa).
+    """
+    if total_agent_wealth <= 0:
+        raise ValueError("total_agent_wealth must be positive")
+    return 3.0 * total_agent_wealth ** 2 / 4.0
+
+
 @dataclass(frozen=True)
 class TradeResult:
     """Immutable result returned by ``quote_buy`` and ``quote_sell``."""
@@ -75,6 +87,8 @@ def quote_buy(
     reserve_b: float,
     outcome: str,
     amount_usd: float,
+    *,
+    enforce_cap: bool = True,
 ) -> TradeResult:
     """Quote a buy of *amount_usd* worth of *outcome* shares.
 
@@ -91,18 +105,20 @@ def quote_buy(
 
     Mirror for NO (outcome B).
 
-    Raises ``ValueError`` if *amount_usd* exceeds the 2 % cap.
+    Raises ``ValueError`` if *amount_usd* exceeds the cap and
+    *enforce_cap* is True (default).
     """
     _validate_reserves(reserve_a, reserve_b)
 
     if amount_usd <= 0:
         raise ValueError("amount_usd must be positive")
 
-    cap = _max_trade_usd(reserve_a, reserve_b)
-    if amount_usd > cap:
-        raise ValueError(
-            f"Trade size ${amount_usd:.4f} exceeds 2% cap of ${cap:.4f}"
-        )
+    if enforce_cap:
+        cap = _max_trade_usd(reserve_a, reserve_b)
+        if amount_usd > cap:
+            raise ValueError(
+                f"Trade size ${amount_usd:.4f} exceeds 2% cap of ${cap:.4f}"
+            )
 
     k = reserve_a * reserve_b
     minted = amount_usd
@@ -147,6 +163,8 @@ def quote_sell(
     reserve_b: float,
     outcome: str,
     shares: float,
+    *,
+    enforce_cap: bool = True,
 ) -> TradeResult:
     """Quote a sell of *shares* of *outcome*.
 
@@ -241,11 +259,12 @@ def quote_sell(
         raise ValueError("Sell yields zero or negative USD")
 
     # Enforce 2% cap on the effective USD amount.
-    cap = _max_trade_usd(reserve_a, reserve_b)
-    if usd_out > cap:
-        raise ValueError(
-            f"Sell value ${usd_out:.4f} exceeds 2% cap of ${cap:.4f}"
-        )
+    if enforce_cap:
+        cap = _max_trade_usd(reserve_a, reserve_b)
+        if usd_out > cap:
+            raise ValueError(
+                f"Sell value ${usd_out:.4f} exceeds 2% cap of ${cap:.4f}"
+            )
 
     # Compute new reserves after the swap of x shares into the pool.
     k = reserve_a * reserve_b
@@ -302,3 +321,53 @@ def anchor_to_real_price(
     new_reserve_a = k / new_reserve_b
 
     return (new_reserve_a, new_reserve_b)
+
+
+# ------------------------------------------------------------------
+# Whale trade computation
+# ------------------------------------------------------------------
+
+def compute_whale_trade(
+    reserve_a: float,
+    reserve_b: float,
+    target_price_yes: float,
+) -> tuple[str, float]:
+    """Compute the trade needed to move the AMM to *target_price_yes*.
+
+    Returns ``(side, amount_usd)`` where *side* is ``"buy_yes"`` or
+    ``"buy_no"`` and *amount_usd* is the USD to spend via mint-and-swap.
+
+    The mint-and-swap for buying YES adds ``W`` to reserve_b, giving::
+
+        new_rb = reserve_b + W
+        new_price_yes = new_rb**2 / (k + new_rb**2)
+
+    Solving for W::
+
+        W = sqrt(k * p / (1 - p)) - reserve_b
+
+    Mirror for buying NO (adds W to reserve_a).
+    """
+    _validate_reserves(reserve_a, reserve_b)
+
+    # Clamp to avoid blowups near 0 or 1.
+    target_price_yes = max(0.01, min(0.99, target_price_yes))
+
+    current_price_yes, _ = get_price(reserve_a, reserve_b)
+
+    if abs(current_price_yes - target_price_yes) < 0.001:
+        return ("buy_yes", 0.0)
+
+    k = reserve_a * reserve_b
+    p = target_price_yes
+
+    if target_price_yes > current_price_yes:
+        # Need to buy YES: add W to reserve_b via mint-and-swap.
+        target_rb = math.sqrt(k * p / (1.0 - p))
+        amount_usd = target_rb - reserve_b
+        return ("buy_yes", amount_usd)
+    else:
+        # Need to buy NO: add W to reserve_a via mint-and-swap.
+        target_ra = math.sqrt(k * (1.0 - p) / p)
+        amount_usd = target_ra - reserve_a
+        return ("buy_no", amount_usd)

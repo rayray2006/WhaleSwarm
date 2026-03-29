@@ -24,6 +24,9 @@ class PolymarketClient:
             "Accept": "application/json",
             "User-Agent": "WhaleSwarm/1.0",
         })
+        # Cache the matched market after first search to avoid repeated lookups.
+        self._cached_market: Optional[Dict] = None
+        self._cached_question: Optional[str] = None
 
     def get_market(self, condition_id: str) -> Optional[Dict]:
         """Get market data by condition ID.
@@ -155,17 +158,29 @@ class PolymarketClient:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [m for _, m in scored[:limit]]
 
-    def get_market_prices_for_question(self, question: str) -> Optional[Tuple[float, float]]:
-        """Search for a market matching a question and return (yes_price, no_price).
+    def _resolve_market(self, question: str) -> Optional[Dict]:
+        """Resolve and cache the Polymarket market for a question."""
+        if self._cached_market is not None and self._cached_question == question:
+            return self._cached_market
 
-        This is the main entry point for the simulation engine to get real prices.
-        """
         markets = self.search_markets(question, limit=3)
         if not markets:
             logger.info(f"No Polymarket market found for: {question[:60]}...")
             return None
 
         market = markets[0]
+        self._cached_market = market
+        self._cached_question = question
+        return market
+
+    def get_market_prices_for_question(self, question: str) -> Optional[Tuple[float, float]]:
+        """Search for a market matching a question and return (yes_price, no_price).
+
+        This is the main entry point for the simulation engine to get real prices.
+        """
+        market = self._resolve_market(question)
+        if market is None:
+            return None
 
         # Extract token IDs from outcomes
         tokens = market.get("clobTokenIds")
@@ -195,6 +210,39 @@ class PolymarketClient:
             f"YES=${yes_price:.3f}, NO=${no_price:.3f}"
         )
         return (yes_price, no_price)
+
+    def get_market_volume_for_question(self, question: str) -> Optional[float]:
+        """Get the cumulative volume (USD) for the market matching *question*.
+
+        Uses the Gamma API ``volume`` field on the cached market object.
+        Re-fetches market data each call to get current volume.
+        """
+        market = self._resolve_market(question)
+        if market is None:
+            return None
+
+        # The condition_id lets us fetch fresh data from Gamma.
+        condition_id = market.get("conditionId") or market.get("condition_id")
+        if condition_id:
+            try:
+                resp = self.session.get(
+                    f"https://gamma-api.polymarket.com/markets/{condition_id}",
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                volume = data.get("volume") or data.get("volumeNum")
+                if volume is not None:
+                    return float(volume)
+            except Exception as e:
+                logger.warning(f"Failed to fetch volume for {condition_id}: {e}")
+
+        # Fallback: use the volume from the cached search result.
+        volume = market.get("volume") or market.get("volumeNum")
+        if volume is not None:
+            return float(volume)
+
+        return None
 
     def ping(self) -> bool:
         """Check if the CLOB API is reachable."""

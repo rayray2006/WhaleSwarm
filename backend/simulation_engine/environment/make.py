@@ -168,11 +168,13 @@ def _create_polymarket_bundle(
 
     platform_cfg = sim_config.get("platform", {})
     initial_balance = float(platform_cfg.get("initial_balance", 1000.0))
+    total_agent_wealth = len(profiles) * initial_balance
 
     platform = PolymarketPlatform(
         db_path=db_path,
         channel=channel,
         initial_balance=initial_balance,
+        total_agent_wealth=total_agent_wealth,
     )
 
     env = PolymarketEnvironment(db=platform.db)
@@ -376,11 +378,13 @@ def create_environment(
         topics=topics,
     )
 
-    # Wire up Polymarket real-price anchoring if enabled
+    # Wire up Polymarket real-price pegging if enabled
     polymarket_enabled = getattr(config, "polymarket_anchoring_enabled", False)
     if polymarket_enabled:
         try:
             from app.services.polymarket_client import PolymarketClient
+            from simulation_engine.simulations.polymarket.volume_tracker import VolumeTracker
+            from simulation_engine.simulations.polymarket.whale_trader import WhaleTrader
 
             clob_url = getattr(config, "polymarket_clob_url", "https://clob.polymarket.com")
             pm_client = PolymarketClient(base_url=clob_url)
@@ -394,10 +398,17 @@ def create_environment(
                     return result[0]  # yes_price
                 return None
 
+            def real_volume_fetcher(market_id: int) -> float | None:
+                return pm_client.get_market_volume_for_question(market_question)
+
             env.real_price_fetcher = real_price_fetcher
-            logger.info("Polymarket real-price anchoring enabled for: %s", market_question[:60])
+            env.real_volume_fetcher = real_volume_fetcher
+            env.whale_trader = WhaleTrader()
+            env.volume_trackers = {}
+
+            logger.info("Polymarket real-price pegging enabled for: %s", market_question[:60])
         except Exception as e:
-            logger.warning("Failed to set up Polymarket anchoring: %s", e)
+            logger.warning("Failed to set up Polymarket pegging: %s", e)
 
     logger.info(
         "OasisEnv created: %d platforms, %d total agents, %d rounds",

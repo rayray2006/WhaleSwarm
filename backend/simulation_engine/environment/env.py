@@ -34,6 +34,8 @@ from simulation_engine.simulations.polymarket.platform import (
     DivergenceTracker,
     PolymarketPlatform,
 )
+from simulation_engine.simulations.polymarket.volume_tracker import VolumeTracker
+from simulation_engine.simulations.polymarket.whale_trader import WhaleTrader, WHALE_USER_ID
 from simulation_engine.social_agent.agent import SocialAgent
 from simulation_engine.social_agent.agent_graph import AgentGraph
 from simulation_engine.social_agent.belief_state import BeliefState, extract_topics_from_requirement
@@ -120,6 +122,9 @@ class OasisEnv:
             self._platform_logs[pname] = plog
 
         self.real_price_fetcher: Optional[Any] = None
+        self.real_volume_fetcher: Optional[Any] = None
+        self.whale_trader: Optional[WhaleTrader] = None
+        self.volume_trackers: Dict[int, VolumeTracker] = {}
 
         self._stopped = False
         self._paused = False
@@ -407,11 +412,11 @@ class OasisEnv:
             return None
 
     # ------------------------------------------------------------------
-    # AMM anchoring
+    # AMM anchoring / pegging
     # ------------------------------------------------------------------
 
     def _anchor_amm_to_real(self, market_id: int, real_price_yes: float) -> None:
-        """Anchor the internal AMM reserves to a real price."""
+        """Anchor the internal AMM reserves to a real price (legacy path)."""
         bundle = self.platforms.get("polymarket")
         if bundle is None:
             return
@@ -439,6 +444,73 @@ class OasisEnv:
             logger.warning(
                 "Could not anchor market %d to price %.4f", market_id, real_price_yes,
             )
+
+    async def _fetch_real_volume(self, market_id: int) -> Optional[float]:
+        """Fetch the cumulative real Polymarket volume for a market."""
+        if self.real_volume_fetcher is None:
+            return None
+
+        try:
+            if asyncio.iscoroutinefunction(self.real_volume_fetcher):
+                return await self.real_volume_fetcher(market_id)
+            return await asyncio.to_thread(self.real_volume_fetcher, market_id)
+        except Exception:
+            logger.warning("Failed to fetch real volume for market %d", market_id, exc_info=True)
+            return None
+
+    async def _peg_amm_to_real(self, market_id: int, round_num: int) -> None:
+        """Peg the AMM to the real Polymarket price using whale trades.
+
+        Only applies the update if real volume exceeds the threshold
+        relative to simulated volume (or the absolute $10k floor).
+        """
+        bundle = self.platforms.get("polymarket")
+        if bundle is None or self.whale_trader is None:
+            return
+
+        real_price = await self._fetch_real_price(market_id)
+        if real_price is None:
+            return
+
+        # Get or create volume tracker for this market.
+        if market_id not in self.volume_trackers:
+            self.volume_trackers[market_id] = VolumeTracker()
+        tracker = self.volume_trackers[market_id]
+
+        # Fetch real cumulative volume.
+        real_volume = await self._fetch_real_volume(market_id)
+        if real_volume is None:
+            real_volume = 0.0
+
+        # Accumulate simulated volume from trades since last anchor.
+        # Sum absolute cost of all non-whale trades in this window.
+        sim_vol_row = bundle.db.fetchone(
+            "SELECT COALESCE(SUM(ABS(cost)), 0) AS vol FROM trade "
+            "WHERE market_id = ? AND user_id != ? AND rowid > ("
+            "  SELECT COALESCE(MAX(rowid), 0) FROM trade "
+            "  WHERE market_id = ? AND user_id = ?)",
+            (market_id, WHALE_USER_ID, market_id, WHALE_USER_ID),
+        )
+        if sim_vol_row:
+            tracker.simulated_volume_since_anchor = float(sim_vol_row["vol"])
+
+        if not tracker.should_anchor(real_volume):
+            logger.debug(
+                "Volume threshold not met for market %d — skipping peg", market_id,
+            )
+            return
+
+        # Execute the whale trade.
+        summary = self.whale_trader.execute_peg(bundle.db, market_id, real_price)
+        if summary:
+            self._log_action({
+                "type": "whale_trade",
+                "market_id": market_id,
+                "round": round_num,
+                **summary,
+            })
+
+        tracker.reset(round_num, real_volume)
 
     # ------------------------------------------------------------------
     # Event injection
@@ -562,7 +634,7 @@ class OasisEnv:
             "max_rounds": self.max_rounds,
         })
 
-        # 1. Fetch real Polymarket CLOB prices and anchor AMM.
+        # 1. Peg AMM to real Polymarket prices (whale trades with volume threshold).
         poly_bundle = self.platforms.get("polymarket")
         if poly_bundle is not None:
             try:
@@ -571,10 +643,13 @@ class OasisEnv:
                 )
                 for m in (markets or []):
                     mid = m["market_id"]
-                    real_price = await self._fetch_real_price(mid)
-                    if real_price is not None:
-                        # 2. Anchor internal AMM to real price.
-                        self._anchor_amm_to_real(mid, real_price)
+                    if self.whale_trader is not None:
+                        await self._peg_amm_to_real(mid, round_num)
+                    else:
+                        # Legacy path: direct reserve reset.
+                        real_price = await self._fetch_real_price(mid)
+                        if real_price is not None:
+                            self._anchor_amm_to_real(mid, real_price)
             except Exception:
                 logger.debug("No markets to anchor yet")
 
