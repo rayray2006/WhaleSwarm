@@ -116,7 +116,7 @@ def _create_social_platform_bundle(
         action_cls=action_cls,
         prompt_builder=prompt_builder,
         llm_client=llm_client,
-        max_iterations=1,
+        max_iterations=2,
     )
 
     # Register agents on the platform (sign_up).

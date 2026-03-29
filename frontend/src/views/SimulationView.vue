@@ -42,20 +42,16 @@
         <div class="card-header">Configuration</div>
         <div class="config-grid">
           <div class="config-item">
-            <span class="config-label">Topic</span>
-            <span class="config-value">{{ config.topic || config.name }}</span>
-          </div>
-          <div class="config-item">
             <span class="config-label">Rounds</span>
-            <span class="config-value">{{ config.num_rounds || '---' }}</span>
+            <div class="stepper">
+              <button class="step-btn" @click="editRounds = Math.max(1, editRounds - 1)">−</button>
+              <span class="step-val">{{ editRounds }}</span>
+              <button class="step-btn" @click="editRounds = Math.min(200, editRounds + 1)">+</button>
+            </div>
           </div>
           <div class="config-item">
             <span class="config-label">Agents</span>
             <span class="config-value">{{ profiles.length || config.num_agents || '---' }}</span>
-          </div>
-          <div class="config-item">
-            <span class="config-label">Platforms</span>
-            <span class="config-value">{{ platformList }}</span>
           </div>
         </div>
       </div>
@@ -72,7 +68,6 @@
       <div v-else-if="profiles.length > 0" class="profiles-section">
         <div class="section-header">
           <span class="card-header">Agent Profiles</span>
-          <span class="tag">{{ profiles.length }} agents</span>
         </div>
         <div class="profiles-grid">
           <div
@@ -242,6 +237,7 @@ export default {
   data() {
     return {
       config: null,
+      editRounds: 50,
       profiles: [],
       status: 'loading',
       loadingProfiles: true,
@@ -264,13 +260,6 @@ export default {
         this.profiles.length > 0 &&
         (this.status === 'ready' || this.status === 'configured' || this.status === 'prepared')
       )
-    },
-    platformList() {
-      if (!this.config?.platforms) return '---'
-      if (Array.isArray(this.config.platforms)) {
-        return this.config.platforms.join(', ')
-      }
-      return Object.keys(this.config.platforms).join(', ')
     },
   },
   async mounted() {
@@ -306,6 +295,7 @@ export default {
 
         if (configRes.status === 'fulfilled' && configRes.value.status === 200) {
           this.config = configRes.value.data
+          this.editRounds = this.config.num_rounds || 50
           this.status = this.config.status || 'configured'
           foundExisting = true
         }
@@ -403,7 +393,7 @@ export default {
       this.error = null
       const sid = this.realSimId || this.simId
       try {
-        await startSimulation({ simulation_id: sid })
+        await startSimulation({ simulation_id: sid, num_rounds: this.editRounds })
         this.$router.push(`/simulation/${sid}/start`)
       } catch (e) {
         this.error = e.response?.data?.error || e.response?.data?.detail || 'Failed to start simulation.'
@@ -527,7 +517,7 @@ export default {
 .config-item {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 6px;
 }
 .config-label {
   font-size: 11px;
@@ -538,6 +528,42 @@ export default {
 .config-value {
   font-size: 14px;
   color: var(--text);
+}
+
+.stepper {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  width: fit-content;
+}
+.step-btn {
+  width: 28px;
+  height: 28px;
+  background: var(--surface-raised);
+  border: none;
+  color: var(--text);
+  font-size: 15px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+.step-btn:hover {
+  background: var(--border);
+}
+.step-val {
+  min-width: 44px;
+  text-align: center;
+  font-size: 14px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  line-height: 28px;
 }
 
 .shimmer-list {

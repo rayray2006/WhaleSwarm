@@ -56,13 +56,17 @@ class TwitterPromptBuilder(BasePromptBuilder):
             don't hold back — react, comment, or share your take.
 
             ===== AVAILABLE ACTIONS =====
-            Choose exactly ONE:
-            - create_post(content) — Tweet something (max 280 chars). Hot takes, reactions, breaking news. Keep it punchy.
-            - like_post(post_id) — Like a tweet. Do this when you agree, find it funny, or it's useful.
+            Choose exactly ONE main action:
+            - create_post(content) — Tweet something new (max 280 chars). Hot takes, reactions, breaking news. Keep it punchy.
             - repost(post_id) — Retweet without comment. Signal boost.
-            - quote_post(post_id, content) — Quote-tweet with your take (max 280 chars). This is how you add commentary.
+            - quote_post(post_id, content) — Quote-tweet with your take (max 280 chars).
             - follow(followee_id) — Follow someone interesting.
-            - do_nothing() — Scroll past. Fine if nothing in your feed warrants a reaction.
+            - do_nothing() — Scroll past if nothing warrants a post or reply.
+
+            OPTIONAL — LIKE ONE TWEET:
+            You may also call like_post(post_id) once for a tweet in your feed
+            that you agree with, find funny, or find useful. Do this in addition
+            to your main action, not instead of it.
 
             IMPORTANT: Stay in character. Be authentic to your persona. Do NOT write generic corporate-sounding tweets.
         """)
@@ -112,25 +116,20 @@ class RedditPromptBuilder(BasePromptBuilder):
             But don't hold back when you have something valuable to add.
 
             ===== AVAILABLE ACTIONS =====
-            Choose exactly ONE:
-
-            ENGAGEMENT (this is how you participate):
-            - create_comment(post_id, content) — Reply to a post. This is your bread and butter. Write in-character comments.
-            - create_post(content, subreddit_name) — Submit a new post to a subreddit. When you have a take, question, or news to share.
-            - like_post(post_id) — Upvote good content, useful arguments, interesting posts.
-            - dislike_post(post_id) — Downvote misinformation, spam, or genuinely bad content only.
-
-            BROWSING (discover content):
-            - browse_subreddit(subreddit_name) — Browse a specific subreddit, or leave empty to browse your home feed.
+            Choose exactly ONE main action:
+            - create_comment(post_id, content) — Reply to a post. Your bread and butter. Write in-character, 2-4 sentences.
+            - create_post(content, subreddit_name) — Submit a new post when you have a take or news to share.
+            - browse_subreddit(subreddit_name) — Browse a subreddit (or leave empty for home feed).
             - search_posts(query) — Search for posts on a topic you care about.
             - trend() — Browse trending/hot posts.
-
-            COMMUNITY:
-            - follow_subreddit(subreddit_name) — Join a subreddit to see its posts in your feed.
+            - follow_subreddit(subreddit_name) — Join a subreddit to see its posts.
             - unfollow_subreddit(subreddit_name) — Leave a subreddit.
+            - do_nothing() — Lurk if nothing warrants a comment or post.
 
-            DEFAULT:
-            - do_nothing() — Lurk. Fine if nothing in your feed warrants engagement.
+            OPTIONAL — VOTE ON ONE POST:
+            You may also call like_post(post_id) or dislike_post(post_id) once
+            for a post you have a clear opinion on. Do this in addition to your
+            main action, not instead of it.
 
             IMPORTANT: Stay in character. Write like a real Redditor, not an AI. Post in subreddits that match your interests.
         """)

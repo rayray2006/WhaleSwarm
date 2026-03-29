@@ -18,14 +18,11 @@
 
     <div class="form-section">
       <label class="form-label">Number of Rounds</label>
-      <input
-        v-model.number="numRounds"
-        type="number"
-        min="1"
-        max="200"
-        placeholder="50"
-        :disabled="generating"
-      />
+      <div class="stepper" :class="{ disabled: generating }">
+        <button class="step-btn" @click="numRounds = Math.max(1, numRounds - 1)" :disabled="generating">−</button>
+        <span class="step-val">{{ numRounds }}</span>
+        <button class="step-btn" @click="numRounds = Math.min(200, numRounds + 1)" :disabled="generating">+</button>
+      </div>
     </div>
 
     <div class="form-section">
@@ -38,21 +35,6 @@
         placeholder="2"
         :disabled="generating"
       />
-    </div>
-
-    <div class="form-section">
-      <label class="form-label">Platforms</label>
-      <div class="platform-checks">
-        <label class="check-label" v-for="p in platformOptions" :key="p.value">
-          <input
-            type="checkbox"
-            :value="p.value"
-            v-model="platforms"
-            :disabled="generating"
-          />
-          <span>{{ p.label }}</span>
-        </label>
-      </div>
     </div>
 
     <!-- Generate / Navigate -->
@@ -104,16 +86,11 @@ export default {
       generating: false,
       simulationId: null,
       error: null,
-      platformOptions: [
-        { value: 'twitter', label: 'Twitter' },
-        { value: 'reddit', label: 'Reddit' },
-        { value: 'polymarket', label: 'Polymarket' },
-      ],
     }
   },
   computed: {
     canGenerate() {
-      return this.simName.trim().length > 0 && this.platforms.length > 0 && this.numAgents >= 2
+      return this.simName.trim().length > 0 && this.numAgents >= 2
     },
   },
   methods: {
@@ -183,22 +160,46 @@ export default {
   letter-spacing: 0.5px;
 }
 
-.platform-checks {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+.stepper {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
 }
-.check-label {
+.stepper.disabled {
+  opacity: 0.5;
+}
+.step-btn {
+  width: 32px;
+  height: 32px;
+  background: var(--surface-raised);
+  border: none;
+  color: var(--text);
+  font-size: 16px;
+  cursor: pointer;
   display: flex;
   align-items: center;
-  gap: var(--space-1);
-  font-size: 13px;
-  color: var(--text-secondary);
-  cursor: pointer;
+  justify-content: center;
+  transition: background 0.15s;
+  flex-shrink: 0;
 }
-.check-label input[type="checkbox"] {
-  width: auto;
-  accent-color: var(--primary);
+.step-btn:hover:not(:disabled) {
+  background: var(--border);
+}
+.step-btn:disabled {
+  cursor: not-allowed;
+}
+.step-val {
+  min-width: 48px;
+  text-align: center;
+  font-size: 14px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  padding: 0 var(--space-1);
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  line-height: 32px;
 }
 
 .actions {

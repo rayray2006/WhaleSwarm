@@ -52,11 +52,15 @@ class Config:
     bet_calibration_cdf_path: str = "backend/data/polymarket_cdfs/cdfs.json"
     bet_calibration_fallback: str = "heuristic"
 
+    # Vertex AI
+    vertex_project: str = ""
+    vertex_location: str = "us-central1"
+
     # Extension B
     agent_persistence_enabled: bool = False
-    model_tier_base: str = "google/gemini-2.5-flash-lite"
-    model_tier_mid: str = "google/gemini-2.5-flash"
-    model_tier_top: str = "google/gemini-2.5-pro"
+    model_tier_base: str = "gemini-2.5-flash-lite"
+    model_tier_mid: str = "gemini-2.5-flash"
+    model_tier_top: str = "gemini-2.5-pro"
     kill_threshold: float = 0.0
     whale_percentile: float = 0.01
     elite_percentile: float = 0.001
@@ -150,10 +154,12 @@ class Config:
             bet_calibration_enabled=get_bool("BET_CALIBRATION_ENABLED", False),
             bet_calibration_cdf_path=get("BET_CALIBRATION_CDF_PATH", "backend/data/polymarket_cdfs/cdfs.json"),
             bet_calibration_fallback=get("BET_CALIBRATION_FALLBACK", "heuristic"),
+            vertex_project=get("GOOGLE_CLOUD_PROJECT", ""),
+            vertex_location=get("GOOGLE_CLOUD_LOCATION", "us-central1"),
             agent_persistence_enabled=get_bool("AGENT_PERSISTENCE_ENABLED", False),
-            model_tier_base=get("MODEL_TIER_BASE", "google/gemini-2.5-flash-lite"),
-            model_tier_mid=get("MODEL_TIER_MID", "google/gemini-2.5-flash"),
-            model_tier_top=get("MODEL_TIER_TOP", "google/gemini-2.5-pro"),
+            model_tier_base=get("MODEL_TIER_BASE", "gemini-2.5-flash-lite"),
+            model_tier_mid=get("MODEL_TIER_MID", "gemini-2.5-flash"),
+            model_tier_top=get("MODEL_TIER_TOP", "gemini-2.5-pro"),
             kill_threshold=get_float("KILL_THRESHOLD", 0.0),
             whale_percentile=get_float("WHALE_PERCENTILE", 0.01),
             elite_percentile=get_float("ELITE_PERCENTILE", 0.001),

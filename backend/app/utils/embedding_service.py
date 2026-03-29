@@ -1,4 +1,4 @@
-"""Embedding service supporting OpenAI, Ollama, and Google Gemini providers."""
+"""Embedding service supporting OpenAI-compatible providers and Google Vertex AI."""
 import logging
 from typing import List
 
@@ -8,20 +8,31 @@ logger = logging.getLogger(__name__)
 
 
 class EmbeddingService:
-    """Generate text embeddings via OpenAI-compatible API, Ollama, or Google Gemini."""
+    """Generate text embeddings via OpenAI-compatible API or Google Vertex AI."""
 
     def __init__(self, config: Config):
         self.config = config
         self.dimensions = config.embedding_dimensions
         self.provider = config.embedding_provider
         self.model = config.embedding_model
-        self._base_url = config.embedding_base_url
-        self._api_key = config.embedding_api_key
 
-        # Detect Google Gemini by base URL
-        self._is_google = "generativelanguage.googleapis.com" in self._base_url
+        self._is_google = self.provider == "google"
 
-        if not self._is_google:
+        if self._is_google:
+            from google import genai
+            try:
+                self._genai_client = genai.Client(
+                    vertexai=True,
+                    project=config.vertex_project,
+                    location=config.vertex_location,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "Failed to initialize Vertex AI embedding client. "
+                    "Ensure Application Default Credentials are configured: "
+                    "run 'gcloud auth application-default login'"
+                ) from exc
+        else:
             from openai import OpenAI
             if self.provider == "ollama":
                 self._client = OpenAI(
@@ -84,36 +95,13 @@ class EmbeddingService:
         return embedding
 
     def _google_embed(self, text: str) -> List[float]:
-        """Embed via Google Gemini REST API (non-OpenAI endpoint)."""
-        import requests
-
-        model = self.model.replace("models/", "")
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/"
-            f"models/{model}:embedContent?key={self._api_key}"
+        """Embed via Vertex AI using the google-genai SDK."""
+        response = self._genai_client.models.embed_content(
+            model=self.model,
+            contents=text,
         )
-        resp = requests.post(url, json={
-            "model": f"models/{model}",
-            "content": {"parts": [{"text": text}]},
-        }, timeout=15)
-        resp.raise_for_status()
-        values = resp.json()["embedding"]["values"]
-        return self._normalize(values)
+        return self._normalize(response.embeddings[0].values)
 
     def _google_embed_batch(self, texts: List[str]) -> List[List[float]]:
-        """Batch embed via Google Gemini REST API."""
-        import requests
-
-        model = self.model.replace("models/", "")
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/"
-            f"models/{model}:batchEmbedContents?key={self._api_key}"
-        )
-        requests_body = [
-            {"model": f"models/{model}", "content": {"parts": [{"text": t}]}}
-            for t in texts
-        ]
-        resp = requests.post(url, json={"requests": requests_body}, timeout=30)
-        resp.raise_for_status()
-        embeddings = resp.json().get("embeddings", [])
-        return [self._normalize(e["values"]) for e in embeddings]
+        """Batch embed via Vertex AI using the google-genai SDK."""
+        return [self._google_embed(t) for t in texts]

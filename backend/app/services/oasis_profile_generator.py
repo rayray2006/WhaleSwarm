@@ -225,7 +225,7 @@ class OasisProfileGenerator:
         batch_size: int = 5,
     ) -> List[OasisAgentProfile]:
         """Generate agent profiles from all entities in a graph."""
-        entities = self.entity_reader.get_entities(graph_id)[:10]
+        entities = self.entity_reader.get_entities(graph_id)
         total = len(entities)
         logger.info(f"Generating profiles for {total} entities")
 
@@ -252,12 +252,12 @@ class OasisProfileGenerator:
 
                 processed += 1
                 if task_id:
-                    progress = int(5 + (processed / total) * 90)
+                    progress = int(5 + (processed / total) * 40)
                     TaskManager.update(task_id, progress=progress)
 
         if task_id:
             TaskManager.update(
-                task_id, progress=90,
+                task_id, progress=45,
                 result={"profile_count": len(profiles)},
             )
 
@@ -623,14 +623,11 @@ class OasisProfileGenerator:
     ) -> str:
         return f"""Generate {count} people for a social media simulation.
 
-TOPIC THEY'RE ENGAGING WITH: {requirement}
-
-KEY FIGURES IN THIS STORY: {', '.join(stakeholder_names[:12])}
-
 ARCHETYPE: {archetype['label'].upper().replace('_', ' ')}
 {archetype['instruction']}
 
-For EACH person, create a complete character:
+For EACH person, create a complete character. Focus 80% on WHO THEY ARE as a person,
+and only 20% on their connection to the simulation topic.
 
 1. FULL NAME — realistic, culturally appropriate for their background
 2. AGE — appropriate for the archetype
@@ -638,16 +635,16 @@ For EACH person, create a complete character:
 4. PROFESSION — specific job title, not just a category
 5. GENDER — male, female, or non-binary
 6. MBTI — pick one that fits the character
-7. BIO — Twitter/Reddit bio in THEIR voice. Max 160 chars. Should sound like a real person wrote it, not an AI.
+7. BIO — Twitter/Reddit bio in THEIR voice. Max 160 chars. About them as a person, not the topic.
 8. PERSONA — 800-1200 characters. Write this like a casting brief for an actor:
-   - Their life story in 2-3 sentences (where they grew up, what shaped them)
-   - Their SPECIFIC opinion on the topic (not "they see both sides" — pick a side)
-   - How they argue online (data-driven? emotional? sarcastic? earnest? combative?)
-   - Their blind spot or contradiction (e.g., claims to be rational but panic-sells)
-   - How they'd behave on a prediction market (bet size, timing, what triggers them to trade)
+   - Their life story in 2-3 sentences (where they grew up, what shaped them, what drives them)
+   - Their personality: how they talk online, what they care about day-to-day
+   - Their blind spots, contradictions, pet peeves
+   - How they argue (data-driven? emotional? sarcastic? earnest? combative? lurker who rarely posts?)
    - One quirky detail that makes them memorable
+   - At the end, one sentence on their gut instinct or passing opinion about: {requirement}
 9. RISK TOLERANCE — conservative, moderate, or aggressive
-10. INTERESTED TOPICS — 4-6 specific topics
+10. INTERESTED TOPICS — 4-6 topics personal to them (hobbies, career, causes they follow)
 
 This is batch #{offset // 5 + 1}. Every person must be UNIQUE.
 

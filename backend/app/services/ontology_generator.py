@@ -19,16 +19,15 @@ CRITICAL RULES FOR ENTITY TYPES:
 - ALWAYS include "Person" and "Organization" as generic fallback types at the end.
 
 BANNED ENTITY TYPES (never use these):
-- State, Country, Nation, Region, Territory, City, Continent — geographic areas are NOT social media actors
-- Government, InternationalOrganization, Alliance, Bloc — too abstract; use specific officials or agencies instead
 - Topic, Viewpoint, Concept, Event, Theory, Policy — abstract concepts
 - MilitaryUnit, Army, Fleet — not social media actors
 - Citizen, People — too vague
 
-If the domain involves countries (e.g., geopolitics), extract the PEOPLE who represent those countries:
-  - Instead of "Russia" → "Vladimir Putin" (Politician), "Kremlin" (GovernmentAgency)
-  - Instead of "NATO" → "NATO Secretary General" (Diplomat)
-  - Instead of "United States" → "Joe Biden" (Politician), "State Department" (GovernmentAgency)
+Countries should be represented as GovernmentAgency entities (e.g., "United States", "Iran", "China" are all GovernmentAgency). Also extract the key PEOPLE from those countries — leaders, diplomats, officials — as separate entities.
+
+For international organizations like NATO, IMF, WHO — use Organization type.
+
+Be BROAD with entity extraction. A geopolitics topic should yield politicians, diplomats, military officials, analysts, journalists, government agencies, companies, AND the countries themselves.
 
 MULTI-DOMAIN BALANCE:
 If the text covers multiple domains (e.g., geopolitics AND gaming, technology AND finance, sports AND politics), you MUST include entity types from EVERY domain mentioned. Allocate types proportionally. Do NOT let one domain consume all slots.
@@ -46,11 +45,10 @@ Return JSON:
 
 # Types that must never become entity types (post-LLM validation).
 _BANNED_TYPES = {
-    "state", "country", "nation", "region", "territory", "city",
-    "continent", "government", "internationalorganization",
-    "alliance", "bloc", "militaryunit", "army", "fleet",
+    "region", "territory", "city", "continent",
+    "militaryunit", "army", "fleet",
     "topic", "viewpoint", "concept", "event", "theory", "policy",
-    "citizen", "people", "headofstate",
+    "citizen", "people",
 }
 
 

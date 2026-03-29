@@ -116,7 +116,7 @@ def prepare_simulation():
                                metadata={"stage": "background_population"})
             stakeholder_names = [p.name for p in stakeholders]
             crowd = gen.generate_background_population(
-                count=0,  # TESTING: no background agents
+                count=100,
                 simulation_requirement=state.simulation_requirement,
                 stakeholder_names=stakeholder_names,
                 task_id=task.task_id,
@@ -232,6 +232,18 @@ def start_simulation():
     # Config should already be generated during prepare step
     if not state.config_generated:
         return jsonify({"error": "Simulation not prepared yet. Config not generated."}), 400
+
+    # If the caller supplied num_rounds, patch the saved config before launching.
+    num_rounds = data.get("num_rounds")
+    if num_rounds:
+        try:
+            num_rounds = int(num_rounds)
+            sim_config = sm.load_config(simulation_id) or {}
+            sim_config["max_rounds"] = num_rounds
+            sm.save_config(simulation_id, sim_config)
+            logger.info("Patched max_rounds=%d for simulation %s", num_rounds, simulation_id)
+        except (ValueError, TypeError):
+            pass
 
     # Start simulation subprocess
     from app.services.simulation_runner import SimulationRunner

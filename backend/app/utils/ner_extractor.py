@@ -11,25 +11,26 @@ NER_SYSTEM_PROMPT = """You are a Named Entity Recognition (NER) system. Extract 
 
 IMPORTANT RULES:
 1. Only extract entities matching the provided ontology types.
-2. Entities must be SPECIFIC, NAMED real-world actors who could plausibly have social media accounts (people, organizations, companies, etc.).
+2. Extract BROADLY — get every named person, company, organization, government agency, and country mentioned or implied by the text.
 3. Each entity needs a name, type (from the ontology), a brief summary, and optional attributes.
 4. Each relationship needs a source entity name, target entity name, type (from the ontology), and a fact description.
 5. If no entities or relationships are found, return empty lists.
 
-NEVER EXTRACT THESE — they are NOT entities:
-- Abstract concepts or phenomena: "Iranian Aggression", "Market Volatility", "Climate Change", "Inflation"
-- Vague categories: "The Media", "The Public", "Analysts", "Investors", "Critics"
-- Economies or sectors: "Iranian Economy", "Tech Sector", "Oil Market", "Housing Market"
-- Policies or events: "Sanctions", "Ceasefire", "Trade War", "The Election"
-- Geographic areas used as actors: "Iran", "Russia", "Europe", "The West"
+WHAT TO EXTRACT (be comprehensive):
+- Named people: politicians, executives, analysts, journalists, diplomats, military leaders, investors, activists
+- Companies and corporations: any company mentioned or relevant to the topic
+- Government agencies: specific agencies like "Pentagon", "SEC", "Federal Reserve", "IRGC"
+- Countries: extract countries as GovernmentAgency entities (e.g., "United States", "Iran", "China") — they are key actors
+- Media outlets: specific news organizations
+- NGOs, think tanks, international organizations: "NATO", "IMF", "WHO", "Brookings"
+- Also extract people NOT directly mentioned but clearly relevant — if the text discusses US foreign policy, include the President even if not named
 
-INSTEAD, extract the SPECIFIC people and organizations behind them:
-- "Iranian Aggression" → extract "Ayatollah Khamenei" (Politician), "IRGC" (GovernmentAgency)
-- "The Media" → extract "CNN" (MediaOutlet), "Reuters" (MediaOutlet)
-- "Iranian Economy" → extract "Central Bank of Iran" (GovernmentAgency), specific analysts
-- "Analysts" → extract specific named analysts like "Mohamed El-Erian" (Analyst)
+DO NOT EXTRACT:
+- Abstract concepts: "Market Volatility", "Inflation", "Aggression", "Trade War"
+- Vague unnamed groups: "The Media", "The Public", "Analysts", "Critics", "Investors"
+- Sectors or economies as entities: "Tech Sector", "Oil Market"
 
-Every entity MUST have a proper noun name — a name you could Google and find a real person or organization.
+Be EXPANSIVE — extract 10-20 entities per chunk. Include the obvious main actors AND the supporting cast (advisors, agencies, affected companies, allied/opposing countries).
 
 ONTOLOGY:
 Entity types: {entity_types}
@@ -65,9 +66,11 @@ class NERExtractor:
         messages = [
             {"role": "system", "content": system_msg},
             {"role": "user", "content": (
-                f"Extract entities and relationships from this text. "
-                f"Extract at most 2 entities — pick the 2 most important ones. "
-                f"Do NOT extract more than 2 entities.\n\n{text}"
+                f"Extract ALL entities and relationships from this text. Be thorough and broad:\n"
+                f"- Extract every named person, company, organization, agency, and country\n"
+                f"- Include people not explicitly named but clearly implied (e.g., a country's leader)\n"
+                f"- Aim for 10-20 entities — get the main actors AND the supporting cast\n"
+                f"- Most entities should be real people, companies, or countries\n\n{text}"
             )},
         ]
 
