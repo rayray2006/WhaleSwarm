@@ -116,7 +116,7 @@ def prepare_simulation():
                                metadata={"stage": "background_population"})
             stakeholder_names = [p.name for p in stakeholders]
             crowd = gen.generate_background_population(
-                count=100,
+                count=0,  # TESTING: no background agents
                 simulation_requirement=state.simulation_requirement,
                 stakeholder_names=stakeholder_names,
                 task_id=task.task_id,
@@ -162,6 +162,17 @@ def prepare_simulation():
             project = pm.load(state.project_id)
             if project and project.polymarket_config:
                 polymarket_config = project.polymarket_config
+                logger.info(
+                    "[CLOB-DEBUG] polymarket_config loaded from project: yes_price=%s, "
+                    "market_question='%s'",
+                    polymarket_config.get("yes_price"),
+                    str(polymarket_config.get("market_question", ""))[:80],
+                )
+            else:
+                logger.info(
+                    "[CLOB-DEBUG] NO polymarket_config on project — initial price will "
+                    "be LLM-generated or default 0.5"
+                )
 
             sim_config = config_gen.generate(
                 profiles=[asdict(p) for p in stakeholders + crowd],
@@ -409,9 +420,11 @@ def get_run_status(simulation_id):
                     pos_value = 0.0
                     for pos in positions:
                         if pos["outcome"] == m["outcome_a"]:
-                            pos_value += pos["shares"] * (1 - yes_price)
-                        else:
+                            # outcome_a is YES; value = shares * yes_price
                             pos_value += pos["shares"] * yes_price
+                        else:
+                            # outcome_b is NO; value = shares * (1 - yes_price)
+                            pos_value += pos["shares"] * (1 - yes_price)
                     total_value = t["balance"] + pos_value
                     pnl = total_value - 1000.0  # initial balance
                     leaderboard.append({
@@ -424,11 +437,74 @@ def get_run_status(simulation_id):
                     })
                 leaderboard.sort(key=lambda x: x["pnl"], reverse=True)
 
+                # Build price history from trade log.
+                # Each trade records the post-trade price; we reconstruct
+                # the per-round price by taking the last trade price per round.
+                price_history = []
+                init_prob = 0.5
+                try:
+                    # Get initial price from sim config
+                    sim_state = sm.load(simulation_id)
+                    sim_cfg = sm.load_config(simulation_id)
+                    if sim_cfg:
+                        init_prob = float(
+                            sim_cfg.get("events", {}).get("market_initial_probability", 0.5)
+                        )
+                    price_history.append({"round": 0, "price": round(init_prob, 4)})
+
+                    # Get per-trade price from the trace table
+                    import json as _json
+                    traces = pm_conn.execute(
+                        "SELECT info FROM trace WHERE action IN ('buy_shares', 'sell_shares') "
+                        "ORDER BY rowid"
+                    ).fetchall()
+                    round_idx = 1
+                    for tr in traces:
+                        try:
+                            info = _json.loads(tr["info"])
+                            # new_price_a is YES price (reserve_b / total)
+                            p = info.get("new_price_a")
+                            if p is not None:
+                                price_history.append({
+                                    "round": round_idx,
+                                    "price": round(float(p), 4),
+                                })
+                                round_idx += 1
+                        except (ValueError, TypeError, KeyError):
+                            continue
+                except Exception:
+                    pass
+
+                # Always include current price as the last point
+                if not price_history or price_history[-1]["price"] != round(yes_price, 4):
+                    price_history.append({
+                        "round": state.get("rounds_completed", len(price_history)),
+                        "price": round(yes_price, 4),
+                    })
+
+                # Build real price history from divergence records in actions.jsonl
+                real_price_history = []
+                try:
+                    from app.services.simulation_ipc import get_divergence_from_actions
+                    divergences = get_divergence_from_actions(sim_dir)
+                    seen_rounds = set()
+                    for d in divergences:
+                        r = d.get("round")
+                        rp = d.get("real_price")
+                        if r is not None and rp is not None and r not in seen_rounds:
+                            real_price_history.append({"round": r, "price": round(float(rp), 4)})
+                            seen_rounds.add(r)
+                except Exception:
+                    pass
+
                 state["polymarket"] = {
                     "yes_price": round(yes_price, 4),
                     "no_price": round(1 - yes_price, 4),
                     "market_question": m["question"],
                     "leaderboard": leaderboard[:8],
+                    "price_history": price_history,
+                    "real_price_history": real_price_history,
+                    "initial_price": round(init_prob, 4),
                 }
 
             pm_conn.close()

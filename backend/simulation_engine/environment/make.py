@@ -228,11 +228,17 @@ def _create_polymarket_bundle(
             }]
 
     for market_cfg in markets_config:
+        init_prob = float(market_cfg.get("initial_probability", 0.5))
+        logger.info(
+            "[CLOB-DEBUG] Creating market: question='%s', initial_probability=%.4f "
+            "(this is the starting YES price — if 0.5 it may NOT be from CLOB)",
+            market_cfg.get("question", "?")[:80], init_prob,
+        )
         platform.create_market(0, {
             "question": market_cfg.get("question", "Will the event happen?"),
             "outcome_a": market_cfg.get("outcome_a", "YES"),
             "outcome_b": market_cfg.get("outcome_b", "NO"),
-            "initial_probability": float(market_cfg.get("initial_probability", 0.5)),
+            "initial_probability": init_prob,
         })
 
     if markets_config:
@@ -380,6 +386,7 @@ def create_environment(
 
     # Wire up Polymarket real-price pegging if enabled
     polymarket_enabled = getattr(config, "polymarket_anchoring_enabled", False)
+    logger.info("[CLOB-DEBUG] polymarket_anchoring_enabled = %s", polymarket_enabled)
     if polymarket_enabled:
         try:
             from app.services.polymarket_client import PolymarketClient
@@ -391,24 +398,37 @@ def create_environment(
 
             # The market question is used to search for a matching Polymarket market
             market_question = sim_config_data.get("events", {}).get("market_question", "")
+            logger.info("[CLOB-DEBUG] market_question for CLOB lookup: '%s'", market_question)
+
+            # Test the fetcher immediately to see if it works
+            try:
+                test_prices = pm_client.get_market_prices_for_question(market_question)
+                logger.info("[CLOB-DEBUG] CLOB price test result: %s", test_prices)
+            except Exception as test_e:
+                logger.warning("[CLOB-DEBUG] CLOB price test FAILED: %s", test_e)
 
             def real_price_fetcher(market_id: int) -> float | None:
                 result = pm_client.get_market_prices_for_question(market_question)
+                logger.info("[CLOB-DEBUG] real_price_fetcher called for market %d, result: %s", market_id, result)
                 if result:
                     return result[0]  # yes_price
                 return None
 
             def real_volume_fetcher(market_id: int) -> float | None:
-                return pm_client.get_market_volume_for_question(market_question)
+                vol = pm_client.get_market_volume_for_question(market_question)
+                logger.info("[CLOB-DEBUG] real_volume_fetcher called for market %d, volume: %s", market_id, vol)
+                return vol
 
             env.real_price_fetcher = real_price_fetcher
             env.real_volume_fetcher = real_volume_fetcher
             env.whale_trader = WhaleTrader()
             env.volume_trackers = {}
 
-            logger.info("Polymarket real-price pegging enabled for: %s", market_question[:60])
+            logger.info("[CLOB-DEBUG] Polymarket pegging SUCCESSFULLY wired up for: %s", market_question[:60])
         except Exception as e:
-            logger.warning("Failed to set up Polymarket pegging: %s", e)
+            logger.warning("[CLOB-DEBUG] Failed to set up Polymarket pegging: %s", e, exc_info=True)
+    else:
+        logger.info("[CLOB-DEBUG] Polymarket anchoring is DISABLED — prices will NOT track real market")
 
     logger.info(
         "OasisEnv created: %d platforms, %d total agents, %d rounds",

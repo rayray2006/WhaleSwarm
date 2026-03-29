@@ -65,12 +65,9 @@ class NERExtractor:
         messages = [
             {"role": "system", "content": system_msg},
             {"role": "user", "content": (
-                f"Extract ALL entities and relationships from this text. Be thorough — "
-                f"extract every named person, organization, agency, and company mentioned. "
-                f"Aim for at least 8-15 entities per chunk if the text supports it. "
-                f"Include diverse types — don't just extract the obvious main actors, "
-                f"also get analysts, commentators, affected organizations, and relevant "
-                f"institutions.\n\n{text}"
+                f"Extract entities and relationships from this text. "
+                f"Extract at most 2 entities — pick the 2 most important ones. "
+                f"Do NOT extract more than 2 entities.\n\n{text}"
             )},
         ]
 

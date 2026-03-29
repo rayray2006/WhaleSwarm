@@ -225,7 +225,7 @@ class OasisProfileGenerator:
         batch_size: int = 5,
     ) -> List[OasisAgentProfile]:
         """Generate agent profiles from all entities in a graph."""
-        entities = self.entity_reader.get_entities(graph_id)
+        entities = self.entity_reader.get_entities(graph_id)[:10]
         total = len(entities)
         logger.info(f"Generating profiles for {total} entities")
 

@@ -1,4 +1,6 @@
-"""Debug script: spin up a minimal simulation (12 agents, 3 rounds) locally.
+"""Debug script: spin up a minimal simulation (2 agents, 3 rounds) locally.
+
+NOTE: The real app is also temporarily limited to 2 entities + 0 background agents for testing.
 
 Usage (from backend/):
     python scripts/debug_sim.py
@@ -221,7 +223,7 @@ def _print_summary(sim_dir: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run a minimal debug simulation")
     parser.add_argument("--rounds", type=int, default=3)
-    parser.add_argument("--agents", type=int, default=12)
+    parser.add_argument("--agents", type=int, default=10)
     parser.add_argument("--peg", action="store_true", help="Enable real Polymarket price pegging")
     parser.add_argument(
         "--question",

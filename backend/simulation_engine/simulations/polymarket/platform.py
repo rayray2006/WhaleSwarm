@@ -254,6 +254,15 @@ class PolymarketPlatform(BasePlatform):
 
         price_a, price_b = get_price(reserve_a, reserve_b)
 
+        logger.info(
+            "[CLOB-DEBUG] Market CREATED: id=%d, initial_prob=%.4f, "
+            "computed reserves=(%.2f, %.2f), resulting price YES=%.4f NO=%.4f, "
+            "k=%.2f, total_agent_wealth=%.2f, question='%s'",
+            market_id, initial_prob, reserve_a, reserve_b,
+            price_a, price_b, k, self.total_agent_wealth or 0,
+            question[:80],
+        )
+
         self.log_trace(
             agent_id,
             "create_market",
@@ -409,6 +418,13 @@ class PolymarketPlatform(BasePlatform):
             created_at,
         )
 
+        logger.info(
+            "[CLOB-DEBUG] BUY: agent=%d outcome=%s amount=$%.2f → %.4f shares @ eff_price=%.4f, "
+            "new_balance=$%.2f, market_price_after YES=%.4f NO=%.4f",
+            agent_id, outcome_label, amount_usd, result.shares_out,
+            result.effective_price, new_balance, new_price_a, new_price_b,
+        )
+
         return {
             "success": True,
             "market_id": market_id,
@@ -553,6 +569,13 @@ class PolymarketPlatform(BasePlatform):
                 "new_price_b": round(new_price_b, 4),
             }),
             created_at,
+        )
+
+        logger.info(
+            "[CLOB-DEBUG] SELL: agent=%d outcome=%s %.4f shares → $%.2f @ eff_price=%.4f, "
+            "new_balance=$%.2f, market_price_after YES=%.4f NO=%.4f",
+            agent_id, outcome_label, shares, usd_out,
+            result.effective_price, new_balance, new_price_a, new_price_b,
         )
 
         return {

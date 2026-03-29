@@ -156,8 +156,8 @@
         <div class="panel-header">
           <span class="panel-title platform-polymarket">&#9830; Polymarket</span>
           <div class="price-badges">
-            <span class="price-badge yes">YES ${{ currentYesPrice.toFixed(2) }}</span>
-            <span class="price-badge no">NO ${{ currentNoPrice.toFixed(2) }}</span>
+            <span class="price-badge yes">YES ${{ displayYesPrice }}</span>
+            <span class="price-badge no">NO ${{ displayNoPrice }}</span>
           </div>
         </div>
         <div class="polymarket-body">
@@ -210,7 +210,9 @@ export default {
       tweets: [],
       redditPosts: [],
       priceHistory: [],
-      currentYesPrice: 0.5,
+      realPriceHistory: [],
+      currentYesPrice: null,
+      initialPriceSet: false,
       portfolios: [],
       paused: false,
       error: null,
@@ -228,7 +230,14 @@ export default {
       return Math.min(100, (this.currentRound / this.totalRounds) * 100)
     },
     currentNoPrice() {
+      if (this.currentYesPrice == null) return null
       return Math.max(0, 1 - this.currentYesPrice)
+    },
+    displayYesPrice() {
+      return this.currentYesPrice != null ? this.currentYesPrice.toFixed(2) : '---'
+    },
+    displayNoPrice() {
+      return this.currentNoPrice != null ? this.currentNoPrice.toFixed(2) : '---'
     },
     isRunning() {
       return this.runStatus === 'running' || this.runStatus === 'loading'
@@ -257,7 +266,15 @@ export default {
       try {
         const res = await getConfig(this.simId)
         this.config = res.data
-        this.totalRounds = this.config.num_rounds || 0
+        this.totalRounds = this.config.num_rounds || this.config.max_rounds || 0
+
+        // Set initial YES price from config so the chart starts at the real price
+        const initProb = this.config?.events?.market_initial_probability
+        if (initProb != null && !this.initialPriceSet) {
+          this.currentYesPrice = initProb
+          this.priceHistory = [{ round: 0, price: initProb }]
+          this.initialPriceSet = true
+        }
       } catch (e) {
         console.error('Failed to load config:', e)
       }
@@ -305,8 +322,20 @@ export default {
           if (pm.yes_price != null) {
             this.currentYesPrice = pm.yes_price
           }
-          if (pm.price_history) {
+          // Use backend price_history if provided (includes initial price)
+          if (pm.price_history && pm.price_history.length > 0) {
             this.priceHistory = pm.price_history
+          }
+          if (pm.real_price_history && pm.real_price_history.length > 0) {
+            this.realPriceHistory = pm.real_price_history
+          }
+          // Set initial price from backend if we haven't yet
+          if (pm.initial_price != null && !this.initialPriceSet) {
+            this.currentYesPrice = this.currentYesPrice || pm.initial_price
+            if (this.priceHistory.length === 0) {
+              this.priceHistory = [{ round: 0, price: pm.initial_price }]
+            }
+            this.initialPriceSet = true
           }
           if (pm.portfolios) {
             this.portfolios = pm.portfolios
@@ -316,10 +345,9 @@ export default {
           }
         }
 
-        // Build price history incrementally from round data
+        // Fallback: build price history incrementally if backend didn't provide it
         if (this.currentRound > this.lastSeenRound) {
           if (this.currentYesPrice != null) {
-            // Avoid duplicates
             const existing = this.priceHistory.find(p => p.round === this.currentRound)
             if (!existing) {
               this.priceHistory.push({
@@ -387,7 +415,8 @@ export default {
 
       const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`)
 
-      const xDomain = [0, Math.max(this.totalRounds, d3.max(this.priceHistory, d => d.round) || 1)]
+      const allPoints = [...this.priceHistory, ...this.realPriceHistory]
+      const xDomain = [0, Math.max(this.totalRounds, d3.max(allPoints, d => d.round) || 1)]
       const x = d3.scaleLinear().domain(xDomain).range([0, innerW])
       const y = d3.scaleLinear().domain([0, 1]).range([innerH, 0])
 
@@ -421,7 +450,12 @@ export default {
         .selectAll('text').attr('fill', '#666').style('font-size', '10px')
       g.selectAll('.domain, .tick line').attr('stroke', '#333')
 
-      // Area under curve
+      const line = d3.line()
+        .x(d => x(d.round))
+        .y(d => y(d.price))
+        .curve(d3.curveMonotoneX)
+
+      // Area under simulated line
       const area = d3.area()
         .x(d => x(d.round))
         .y0(innerH)
@@ -433,12 +467,7 @@ export default {
         .attr('d', area)
         .attr('fill', 'rgba(255, 107, 26, 0.08)')
 
-      // Line
-      const line = d3.line()
-        .x(d => x(d.round))
-        .y(d => y(d.price))
-        .curve(d3.curveMonotoneX)
-
+      // Simulated price line (orange)
       g.append('path')
         .datum(this.priceHistory)
         .attr('d', line)
@@ -446,7 +475,7 @@ export default {
         .attr('stroke', '#FF6B1A')
         .attr('stroke-width', 2)
 
-      // Current price dot
+      // Current simulated price dot
       if (this.priceHistory.length > 0) {
         const last = this.priceHistory[this.priceHistory.length - 1]
         g.append('circle')
@@ -458,6 +487,27 @@ export default {
           .attr('stroke-width', 2)
       }
 
+      // Real price line (cyan), only if data exists
+      if (this.realPriceHistory.length > 0) {
+        g.append('path')
+          .datum(this.realPriceHistory)
+          .attr('d', line)
+          .attr('fill', 'none')
+          .attr('stroke', '#00D4FF')
+          .attr('stroke-width', 2)
+          .attr('stroke-dasharray', '6,3')
+
+        // Current real price dot
+        const lastReal = this.realPriceHistory[this.realPriceHistory.length - 1]
+        g.append('circle')
+          .attr('cx', x(lastReal.round))
+          .attr('cy', y(lastReal.price))
+          .attr('r', 4)
+          .attr('fill', '#00D4FF')
+          .attr('stroke', '#0A0A0A')
+          .attr('stroke-width', 2)
+      }
+
       // Y-axis label
       g.append('text')
         .attr('transform', 'rotate(-90)')
@@ -465,6 +515,30 @@ export default {
         .attr('fill', '#666').attr('text-anchor', 'middle')
         .style('font-size', '10px')
         .text('YES Price')
+
+      // Legend (only show if real price data exists)
+      if (this.realPriceHistory.length > 0) {
+        const legend = g.append('g').attr('transform', `translate(${innerW - 120}, 4)`)
+
+        legend.append('line')
+          .attr('x1', 0).attr('x2', 16)
+          .attr('y1', 6).attr('y2', 6)
+          .attr('stroke', '#FF6B1A').attr('stroke-width', 2)
+        legend.append('text')
+          .attr('x', 20).attr('y', 10)
+          .attr('fill', '#888').style('font-size', '10px')
+          .text('Simulated')
+
+        legend.append('line')
+          .attr('x1', 0).attr('x2', 16)
+          .attr('y1', 22).attr('y2', 22)
+          .attr('stroke', '#00D4FF').attr('stroke-width', 2)
+          .attr('stroke-dasharray', '6,3')
+        legend.append('text')
+          .attr('x', 20).attr('y', 26)
+          .attr('fill', '#888').style('font-size', '10px')
+          .text('Real')
+      }
     },
     async handlePause() {
       try {
