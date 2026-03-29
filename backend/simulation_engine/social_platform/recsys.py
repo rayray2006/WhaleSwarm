@@ -164,6 +164,199 @@ def reddit_hot_score_recsys(
 
 
 # ------------------------------------------------------------------
+# 2b. Reddit subreddit-aware recommendation
+# ------------------------------------------------------------------
+
+def reddit_subreddit_recsys(
+    all_posts: List[Dict[str, Any]],
+    max_rec_post_len: int,
+    db: Any,
+    agent_count: int,
+) -> Dict[int, List[int]]:
+    """Subreddit-aware personalised feed for Reddit agents.
+
+    Fills each user's feed in four stages:
+      1. Followed-subreddit posts (50% of slots)
+      2. Cross-promoted similar/new subreddits (15%)
+      3. Popular discovery from unfollowed subreddits (20%)
+      4. General posts with no subreddit (15%)
+
+    Falls back to ``reddit_hot_score_recsys`` if no subreddits exist.
+
+    Args:
+        all_posts: Post dicts with ``post_id``, ``num_likes``,
+            ``num_dislikes``, ``created_at``, and ``subreddit_id``.
+        max_rec_post_len: Maximum posts per feed.
+        db: Database instance for querying subreddit tables.
+        agent_count: Total number of registered agents.
+
+    Returns:
+        ``rec_matrix`` mapping ``user_id`` -> list of ``post_id``.
+    """
+    if not all_posts:
+        return {}
+
+    # Check if subreddits exist at all.
+    sub_count = db.fetchone("SELECT COUNT(*) as cnt FROM subreddit")
+    if not sub_count or sub_count["cnt"] == 0:
+        # No subreddits yet -- fall back to classic hot-score.
+        matrix = reddit_hot_score_recsys(all_posts, max_rec_post_len)
+        # Ensure all agents have an entry.
+        all_post_ids = [p["post_id"] for p in all_posts][:max_rec_post_len]
+        for uid in range(agent_count):
+            if uid not in matrix:
+                matrix[uid] = list(all_post_ids)
+        return matrix
+
+    # Pre-score all posts by hot score.
+    post_scores: Dict[int, float] = {}
+    for p in all_posts:
+        post_scores[p["post_id"]] = _hot_score(
+            ups=p.get("num_likes", 0),
+            downs=p.get("num_dislikes", 0),
+            created_at=p.get("created_at", ""),
+        )
+
+    # Index posts by subreddit_id.
+    posts_by_sub: Dict[Optional[int], List[Dict[str, Any]]] = {}
+    for p in all_posts:
+        sid = p.get("subreddit_id")
+        posts_by_sub.setdefault(sid, []).append(p)
+
+    # Sort each bucket by hot score descending.
+    for sid in posts_by_sub:
+        posts_by_sub[sid].sort(key=lambda p: post_scores[p["post_id"]], reverse=True)
+
+    # Fetch subreddit metadata for popularity weighting.
+    sub_rows = db.fetchall("SELECT subreddit_id, num_followers, created_at FROM subreddit")
+    sub_popularity: Dict[int, int] = {r["subreddit_id"]: r["num_followers"] for r in sub_rows}
+    sub_created: Dict[int, str] = {r["subreddit_id"]: r["created_at"] or "" for r in sub_rows}
+
+    # Slot allocation.
+    n_followed = max(1, int(max_rec_post_len * 0.50))
+    n_cross = max(1, int(max_rec_post_len * 0.15))
+    n_popular = max(1, int(max_rec_post_len * 0.20))
+    n_general = max(1, max_rec_post_len - n_followed - n_cross - n_popular)
+
+    rec_matrix: Dict[int, List[int]] = {}
+
+    for uid in range(agent_count):
+        seen: set = set()
+        feed: List[int] = []
+
+        # --- Stage 1: Followed subreddits (50%) ---
+        followed_rows = db.fetchall(
+            "SELECT subreddit_id FROM subreddit_follow WHERE user_id = ?",
+            (uid,),
+        )
+        followed_ids = {r["subreddit_id"] for r in followed_rows}
+
+        if followed_ids:
+            # Cap per-subreddit to enforce diversity.
+            per_sub_cap = max(2, int(n_followed / len(followed_ids) * 1.5))
+            remaining_slots = n_followed
+
+            for sid in followed_ids:
+                if remaining_slots <= 0:
+                    break
+                bucket = posts_by_sub.get(sid, [])
+                added = 0
+                for p in bucket:
+                    if added >= per_sub_cap or remaining_slots <= 0:
+                        break
+                    pid = p["post_id"]
+                    if pid not in seen:
+                        feed.append(pid)
+                        seen.add(pid)
+                        added += 1
+                        remaining_slots -= 1
+
+        # --- Stage 2: Cross-promotion of similar subreddits (15%) ---
+        if followed_ids:
+            # Find subreddits similar to followed ones that the user doesn't follow.
+            placeholders = ",".join("?" for _ in followed_ids)
+            similar_rows = db.fetchall(
+                f"SELECT DISTINCT similar_subreddit_id FROM subreddit_similarity "
+                f"WHERE subreddit_id IN ({placeholders})",
+                tuple(followed_ids),
+            )
+            similar_ids = {r["similar_subreddit_id"] for r in similar_rows} - followed_ids
+
+            # Score by cold-start boost: fewer followers + newer = higher priority.
+            def _cross_promo_score(sid: int) -> float:
+                pop = sub_popularity.get(sid, 0)
+                # Newer subs get a boost: use created_at epoch.
+                try:
+                    dt = datetime.fromisoformat(sub_created.get(sid, ""))
+                    age_seconds = max(1, (datetime.utcnow() - dt).total_seconds())
+                except (ValueError, TypeError):
+                    age_seconds = 86400 * 30  # default 30 days
+                # Lower followers + newer = higher score.
+                return 1.0 / (1 + pop) + 3600.0 / age_seconds
+
+            ranked_similar = sorted(similar_ids, key=_cross_promo_score, reverse=True)
+            remaining = n_cross
+            for sid in ranked_similar:
+                if remaining <= 0:
+                    break
+                for p in posts_by_sub.get(sid, []):
+                    if remaining <= 0:
+                        break
+                    pid = p["post_id"]
+                    if pid not in seen:
+                        feed.append(pid)
+                        seen.add(pid)
+                        remaining -= 1
+
+        # --- Stage 3: Popular discovery from unfollowed subreddits (20%) ---
+        unfollowed_subs = [
+            sid for sid in sub_popularity
+            if sid not in followed_ids and sid is not None
+        ]
+        # Weight by popularity.
+        unfollowed_subs.sort(key=lambda sid: sub_popularity.get(sid, 0), reverse=True)
+        remaining = n_popular
+        for sid in unfollowed_subs:
+            if remaining <= 0:
+                break
+            for p in posts_by_sub.get(sid, []):
+                if remaining <= 0:
+                    break
+                pid = p["post_id"]
+                if pid not in seen:
+                    feed.append(pid)
+                    seen.add(pid)
+                    remaining -= 1
+
+        # --- Stage 4: General posts (no subreddit) (15%) ---
+        general_posts = posts_by_sub.get(None, [])
+        remaining = n_general
+        for p in general_posts:
+            if remaining <= 0:
+                break
+            pid = p["post_id"]
+            if pid not in seen:
+                feed.append(pid)
+                seen.add(pid)
+                remaining -= 1
+
+        # If any stage under-filled, backfill from all posts by hot score.
+        if len(feed) < max_rec_post_len:
+            all_sorted = sorted(all_posts, key=lambda p: post_scores[p["post_id"]], reverse=True)
+            for p in all_sorted:
+                if len(feed) >= max_rec_post_len:
+                    break
+                pid = p["post_id"]
+                if pid not in seen:
+                    feed.append(pid)
+                    seen.add(pid)
+
+        rec_matrix[uid] = feed[:max_rec_post_len]
+
+    return rec_matrix
+
+
+# ------------------------------------------------------------------
 # 3. Twitter recsys (paraphrase-MiniLM-L6-v2)
 # ------------------------------------------------------------------
 

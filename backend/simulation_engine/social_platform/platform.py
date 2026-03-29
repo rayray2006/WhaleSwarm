@@ -26,6 +26,7 @@ from simulation_engine.social_platform.platform_utils import (
 from simulation_engine.social_platform.recsys import (
     random_recsys,
     reddit_hot_score_recsys,
+    reddit_subreddit_recsys,
     twitter_recsys,
     twhin_recsys,
 )
@@ -96,8 +97,11 @@ class Platform(BasePlatform):
     # ------------------------------------------------------------------
 
     def _load_extra_schemas(self) -> None:
-        """Load repost and quote_post schemas from the social_media dir."""
-        for name in ("repost", "quote_post"):
+        """Load extra schemas from the social_media dir."""
+        for name in (
+            "repost", "quote_post",
+            "subreddit", "subreddit_follow", "subreddit_similarity",
+        ):
             sql_path = _SOCIAL_MEDIA_SCHEMA_DIR / f"{name}.sql"
             if sql_path.exists():
                 sql = sql_path.read_text(encoding="utf-8")
@@ -105,6 +109,14 @@ class Platform(BasePlatform):
                 logger.debug("Loaded extra schema '%s' from %s", name, sql_path)
             else:
                 logger.warning("Extra schema file not found: %s", sql_path)
+
+        # Add subreddit_id column to post table (nullable, for Reddit posts).
+        try:
+            self.db.conn.execute(
+                "ALTER TABLE post ADD COLUMN subreddit_id INTEGER DEFAULT NULL"
+            )
+        except Exception:
+            pass  # Column already exists
 
     # ------------------------------------------------------------------
     # Recommendation system
@@ -122,15 +134,9 @@ class Platform(BasePlatform):
                 self._agent_count, self.max_rec_post_len, all_posts
             )
         elif self.recsys_type == RecsysType.REDDIT:
-            self.rec_matrix = reddit_hot_score_recsys(
-                all_posts, self.max_rec_post_len
+            self.rec_matrix = reddit_subreddit_recsys(
+                all_posts, self.max_rec_post_len, self.db, self._agent_count
             )
-            # Ensure all agents have an entry.
-            for uid in range(self._agent_count):
-                if uid not in self.rec_matrix:
-                    self.rec_matrix[uid] = [p["post_id"] for p in all_posts][
-                        : self.max_rec_post_len
-                    ]
         elif self.recsys_type in (RecsysType.TWITTER, RecsysType.TWHIN):
             user_profiles = self._fetch_user_profiles()
             func = (
@@ -149,7 +155,7 @@ class Platform(BasePlatform):
     def _fetch_all_posts(self) -> List[Dict[str, Any]]:
         """Return all posts as a list of dicts."""
         rows = self.db.fetchall(
-            "SELECT post_id, user_id, content, created_at, num_likes, num_dislikes "
+            "SELECT post_id, user_id, content, created_at, num_likes, num_dislikes, subreddit_id "
             "FROM post ORDER BY post_id"
         )
         return [dict(r) for r in rows]
@@ -211,21 +217,37 @@ class Platform(BasePlatform):
     # ------------------------------------------------------------------
 
     def create_post(self, agent_id: int, message: Any) -> Dict[str, Any]:
-        """Create a new post (tweet).
+        """Create a new post (tweet / Reddit submission).
 
-        Expected *message* keys: ``content``.
+        Expected *message* keys: ``content``, optionally ``subreddit_name``.
         """
         content = sanitize_content(message.get("content", ""))
         if not content:
             return {"success": False, "error": "empty content"}
 
+        subreddit_name = message.get("subreddit_name", "")
+        subreddit_id = None
+        if subreddit_name:
+            subreddit_name = subreddit_name.strip().lower().lstrip("r/")
+            row = self.db.fetchone(
+                "SELECT subreddit_id FROM subreddit WHERE name = ?",
+                (subreddit_name,),
+            )
+            if not row:
+                return {"success": False, "error": f"subreddit '{subreddit_name}' does not exist"}
+            subreddit_id = row["subreddit_id"]
+
         created_at = now_iso()
         cursor = self.db.execute(
-            "INSERT INTO post (user_id, content, created_at) VALUES (?, ?, ?)",
-            (agent_id, content, created_at),
+            "INSERT INTO post (user_id, content, created_at, subreddit_id) VALUES (?, ?, ?, ?)",
+            (agent_id, content, created_at, subreddit_id),
         )
         post_id = cursor.lastrowid
-        self.log_trace(agent_id, "create_post", json.dumps({"post_id": post_id}), created_at)
+        self.log_trace(
+            agent_id, "create_post",
+            json.dumps({"post_id": post_id, "subreddit_name": subreddit_name or None}),
+            created_at,
+        )
 
         return {"success": True, "post_id": post_id}
 
@@ -593,6 +615,234 @@ class Platform(BasePlatform):
             agent_id, "report", json.dumps({"post_id": post_id, "reason": reason}), created_at
         )
         return {"success": True, "post_id": post_id}
+
+    # ------------------------------------------------------------------
+    # Subreddit actions
+    # ------------------------------------------------------------------
+
+    def create_subreddit(self, agent_id: int, message: Any) -> Dict[str, Any]:
+        """Create a new subreddit community.
+
+        Expected *message* keys: ``name``, optionally ``description``,
+        ``similar_to`` (list of subreddit name strings).
+        """
+        raw_name = message.get("name", "")
+        if not raw_name:
+            return {"success": False, "error": "missing subreddit name"}
+
+        name = raw_name.strip().lower().replace(" ", "_").lstrip("r/")[:30]
+        if not name:
+            return {"success": False, "error": "invalid subreddit name"}
+
+        # Check uniqueness.
+        existing = self.db.fetchone(
+            "SELECT subreddit_id FROM subreddit WHERE name = ?", (name,)
+        )
+        if existing:
+            return {"success": False, "error": f"subreddit '{name}' already exists"}
+
+        description = message.get("description", "")
+        similar_to = message.get("similar_to", [])
+        if isinstance(similar_to, str):
+            similar_to = [s.strip() for s in similar_to.split(",") if s.strip()]
+
+        created_at = now_iso()
+        cursor = self.db.execute(
+            "INSERT INTO subreddit (name, description, creator_id, num_followers, created_at) "
+            "VALUES (?, ?, ?, 1, ?)",
+            (name, description, agent_id, created_at),
+        )
+        subreddit_id = cursor.lastrowid
+
+        # Auto-follow the creator.
+        self.db.execute(
+            "INSERT OR IGNORE INTO subreddit_follow (user_id, subreddit_id, created_at) "
+            "VALUES (?, ?, ?)",
+            (agent_id, subreddit_id, created_at),
+        )
+
+        # Insert bidirectional similarity edges.
+        for sim_name in similar_to:
+            sim_name = sim_name.strip().lower().lstrip("r/")
+            sim_row = self.db.fetchone(
+                "SELECT subreddit_id FROM subreddit WHERE name = ?", (sim_name,)
+            )
+            if sim_row:
+                sim_id = sim_row["subreddit_id"]
+                self.db.execute(
+                    "INSERT OR IGNORE INTO subreddit_similarity "
+                    "(subreddit_id, similar_subreddit_id, created_at) VALUES (?, ?, ?)",
+                    (subreddit_id, sim_id, created_at),
+                )
+                self.db.execute(
+                    "INSERT OR IGNORE INTO subreddit_similarity "
+                    "(subreddit_id, similar_subreddit_id, created_at) VALUES (?, ?, ?)",
+                    (sim_id, subreddit_id, created_at),
+                )
+
+        self.log_trace(
+            agent_id, "create_subreddit",
+            json.dumps({"subreddit_id": subreddit_id, "name": name, "similar_to": similar_to}),
+            created_at,
+        )
+        return {"success": True, "subreddit_id": subreddit_id, "name": name}
+
+    def follow_subreddit(self, agent_id: int, message: Any) -> Dict[str, Any]:
+        """Follow a subreddit.
+
+        Expected *message* keys: ``subreddit_name``.
+        """
+        raw_name = message.get("subreddit_name", "")
+        if not raw_name:
+            return {"success": False, "error": "missing subreddit_name"}
+
+        name = raw_name.strip().lower().lstrip("r/")
+        row = self.db.fetchone(
+            "SELECT subreddit_id FROM subreddit WHERE name = ?", (name,)
+        )
+        if not row:
+            return {"success": False, "error": f"subreddit '{name}' does not exist"}
+
+        subreddit_id = row["subreddit_id"]
+        created_at = now_iso()
+
+        # Check if already following.
+        existing = self.db.fetchone(
+            "SELECT 1 FROM subreddit_follow WHERE user_id = ? AND subreddit_id = ?",
+            (agent_id, subreddit_id),
+        )
+        if not existing:
+            self.db.execute(
+                "INSERT INTO subreddit_follow (user_id, subreddit_id, created_at) "
+                "VALUES (?, ?, ?)",
+                (agent_id, subreddit_id, created_at),
+            )
+            self.db.execute(
+                "UPDATE subreddit SET num_followers = num_followers + 1 "
+                "WHERE subreddit_id = ?",
+                (subreddit_id,),
+            )
+
+        self.log_trace(
+            agent_id, "follow_subreddit",
+            json.dumps({"subreddit_name": name}), created_at,
+        )
+        return {"success": True, "subreddit_name": name}
+
+    def unfollow_subreddit(self, agent_id: int, message: Any) -> Dict[str, Any]:
+        """Unfollow a subreddit.
+
+        Expected *message* keys: ``subreddit_name``.
+        """
+        raw_name = message.get("subreddit_name", "")
+        if not raw_name:
+            return {"success": False, "error": "missing subreddit_name"}
+
+        name = raw_name.strip().lower().lstrip("r/")
+        row = self.db.fetchone(
+            "SELECT subreddit_id FROM subreddit WHERE name = ?", (name,)
+        )
+        if not row:
+            return {"success": False, "error": f"subreddit '{name}' does not exist"}
+
+        subreddit_id = row["subreddit_id"]
+        created_at = now_iso()
+
+        cursor = self.db.execute(
+            "DELETE FROM subreddit_follow WHERE user_id = ? AND subreddit_id = ?",
+            (agent_id, subreddit_id),
+        )
+        if cursor.rowcount > 0:
+            self.db.execute(
+                "UPDATE subreddit SET num_followers = MAX(num_followers - 1, 0) "
+                "WHERE subreddit_id = ?",
+                (subreddit_id,),
+            )
+
+        self.log_trace(
+            agent_id, "unfollow_subreddit",
+            json.dumps({"subreddit_name": name}), created_at,
+        )
+        return {"success": True, "subreddit_name": name}
+
+    def browse_subreddit(self, agent_id: int, message: Any) -> Dict[str, Any]:
+        """Browse posts in a subreddit or the agent's combined followed feed.
+
+        Expected *message* keys: optionally ``subreddit_name``.
+        If omitted, returns posts from all followed subreddits.
+        """
+        subreddit_name = (message.get("subreddit_name") or "").strip().lower().lstrip("r/")
+        created_at = now_iso()
+
+        if subreddit_name:
+            # Browse a specific subreddit.
+            row = self.db.fetchone(
+                "SELECT subreddit_id FROM subreddit WHERE name = ?",
+                (subreddit_name,),
+            )
+            if not row:
+                return {"success": False, "error": f"subreddit '{subreddit_name}' does not exist"}
+
+            posts = self.db.fetchall(
+                "SELECT p.post_id, p.user_id, p.content, p.created_at, "
+                "p.num_likes, p.num_dislikes, u.user_name, u.name "
+                "FROM post p "
+                "LEFT JOIN user u ON p.user_id = u.user_id "
+                "WHERE p.subreddit_id = ? "
+                "ORDER BY p.num_likes - p.num_dislikes DESC, p.post_id DESC "
+                "LIMIT 10",
+                (row["subreddit_id"],),
+            )
+        else:
+            # Browse combined followed subreddits.
+            followed_ids = self.db.fetchall(
+                "SELECT subreddit_id FROM subreddit_follow WHERE user_id = ?",
+                (agent_id,),
+            )
+            if not followed_ids:
+                return {
+                    "success": True,
+                    "posts": [],
+                    "subreddits_followed": [],
+                    "message": "You don't follow any subreddits yet.",
+                }
+
+            sub_ids = [r["subreddit_id"] for r in followed_ids]
+            placeholders = ",".join("?" for _ in sub_ids)
+            posts = self.db.fetchall(
+                f"SELECT p.post_id, p.user_id, p.content, p.created_at, "
+                f"p.num_likes, p.num_dislikes, u.user_name, u.name "
+                f"FROM post p "
+                f"LEFT JOIN user u ON p.user_id = u.user_id "
+                f"WHERE p.subreddit_id IN ({placeholders}) "
+                f"ORDER BY p.num_likes - p.num_dislikes DESC, p.post_id DESC "
+                f"LIMIT 10",
+                tuple(sub_ids),
+            )
+
+        # Get list of followed subreddits for context.
+        followed_subs = self.db.fetchall(
+            "SELECT s.name FROM subreddit s "
+            "JOIN subreddit_follow sf ON s.subreddit_id = sf.subreddit_id "
+            "WHERE sf.user_id = ?",
+            (agent_id,),
+        )
+        followed_names = [r["name"] for r in followed_subs]
+
+        results = [dict(r) for r in posts]
+        self.log_trace(
+            agent_id, "browse_subreddit",
+            json.dumps({
+                "subreddit_name": subreddit_name or "(home)",
+                "count": len(results),
+            }),
+            created_at,
+        )
+        return {
+            "success": True,
+            "posts": results,
+            "subreddits_followed": followed_names,
+        }
 
     # ------------------------------------------------------------------
     # Shared / no-op actions

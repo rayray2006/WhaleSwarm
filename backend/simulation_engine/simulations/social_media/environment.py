@@ -64,8 +64,11 @@ class SocialMediaEnvironment(BaseEnvironment):
 
                 if self.platform_name.lower() == "reddit":
                     score = likes - dislikes
+                    sub_label = ""
+                    if p.get("subreddit_name"):
+                        sub_label = f"r/{p['subreddit_name']} | "
                     line = (
-                        f"  [Post #{p['post_id']}] u/{who} ({score:+d} pts):\n"
+                        f"  [Post #{p['post_id']}] {sub_label}u/{who} ({score:+d} pts):\n"
                         f"    {content}"
                     )
                 else:
@@ -99,6 +102,48 @@ class SocialMediaEnvironment(BaseEnvironment):
                 f"===== YOUR {self.platform_name.upper()} FEED =====\n"
                 "(no posts yet)"
             )
+
+        # ---- 1b. Subreddit info (Reddit only) ------------------------------
+        if self.platform_name.lower() == "reddit":
+            followed_subs = self.db.fetchall(
+                "SELECT s.name, s.num_followers "
+                "FROM subreddit s "
+                "JOIN subreddit_follow sf ON s.subreddit_id = sf.subreddit_id "
+                "WHERE sf.user_id = ? "
+                "ORDER BY s.num_followers DESC",
+                (agent_id,),
+            )
+            if followed_subs:
+                sub_names = [f"r/{r['name']}" for r in followed_subs]
+                sections.append(
+                    f"===== YOUR SUBREDDITS =====\n"
+                    f"You follow: {', '.join(sub_names)} ({len(sub_names)} subreddits)"
+                )
+            else:
+                sections.append(
+                    "===== YOUR SUBREDDITS =====\n"
+                    "You don't follow any subreddits yet. "
+                    "Use browse_subreddit() to discover communities or create_subreddit() to start one."
+                )
+
+            # Show popular subreddits if agent follows fewer than 3.
+            if len(followed_subs) < 3:
+                popular = self.db.fetchall(
+                    "SELECT name, description, num_followers FROM subreddit "
+                    "ORDER BY num_followers DESC LIMIT 5"
+                )
+                if popular:
+                    pop_lines = []
+                    for r in popular:
+                        desc = (r["description"] or "")[:80]
+                        pop_lines.append(
+                            f"  r/{r['name']} ({r['num_followers']} followers)"
+                            + (f": {desc}" if desc else "")
+                        )
+                    sections.append(
+                        "===== POPULAR SUBREDDITS =====\n"
+                        + "\n".join(pop_lines)
+                    )
 
         # ---- 2. Notifications -----------------------------------------------
         own_likes = self.db.fetchall(
@@ -153,9 +198,12 @@ class SocialMediaEnvironment(BaseEnvironment):
             placeholders = ",".join("?" for _ in ids)
             return self.db.fetchall(
                 f"SELECT p.post_id, p.user_id, p.content, p.created_at, "
-                f"p.num_likes, p.num_dislikes, u.user_name, u.name "
+                f"p.num_likes, p.num_dislikes, p.subreddit_id, "
+                f"u.user_name, u.name, "
+                f"s.name as subreddit_name "
                 f"FROM post p "
                 f"LEFT JOIN user u ON p.user_id = u.user_id "
+                f"LEFT JOIN subreddit s ON p.subreddit_id = s.subreddit_id "
                 f"WHERE p.post_id IN ({placeholders}) "
                 f"ORDER BY p.post_id DESC",
                 tuple(ids),
@@ -164,9 +212,12 @@ class SocialMediaEnvironment(BaseEnvironment):
         # Fallback: most recent posts.
         return self.db.fetchall(
             "SELECT p.post_id, p.user_id, p.content, p.created_at, "
-            "p.num_likes, p.num_dislikes, u.user_name, u.name "
+            "p.num_likes, p.num_dislikes, p.subreddit_id, "
+            "u.user_name, u.name, "
+            "s.name as subreddit_name "
             "FROM post p "
             "LEFT JOIN user u ON p.user_id = u.user_id "
+            "LEFT JOIN subreddit s ON p.subreddit_id = s.subreddit_id "
             "ORDER BY p.post_id DESC LIMIT ?",
             (limit,),
         )

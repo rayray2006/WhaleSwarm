@@ -32,6 +32,10 @@ class ActionType(IntEnum):
     BROWSE_MARKETS = auto()
     VIEW_PORTFOLIO = auto()
     COMMENT_ON_MARKET = auto()
+    CREATE_SUBREDDIT = auto()
+    FOLLOW_SUBREDDIT = auto()
+    UNFOLLOW_SUBREDDIT = auto()
+    BROWSE_SUBREDDIT = auto()
 
 
 class RecsysType(IntEnum):

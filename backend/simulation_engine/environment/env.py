@@ -644,6 +644,7 @@ class OasisEnv:
 
         if round_num == 0:
             await self._inject_initial_posts()
+            self._inject_initial_subreddits()
 
         # 8. Select active agents and run them concurrently.
         active_agents = self._select_active_agents(round_num)
@@ -759,6 +760,24 @@ class OasisEnv:
     # ------------------------------------------------------------------
     # Initial post injection
     # ------------------------------------------------------------------
+
+    def _inject_initial_subreddits(self) -> None:
+        """Seed subreddits from simulation topics so agents have communities to join."""
+        bundle = self.platforms.get("reddit")
+        if bundle is None or not isinstance(bundle.platform, SocialPlatform):
+            return
+
+        for topic in self.topics[:5]:
+            name = topic.lower().replace(" ", "_")[:30]
+            if not name:
+                continue
+            bundle.platform.create_subreddit(0, {
+                "name": name,
+                "description": f"Discussion about {topic}",
+                "similar_to": [],
+            })
+        if self.topics:
+            logger.info("Seeded %d initial subreddits from topics", min(5, len(self.topics)))
 
     async def _inject_initial_posts(self) -> None:
         """Inject seed posts from event config into social platforms."""

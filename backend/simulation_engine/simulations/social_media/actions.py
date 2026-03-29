@@ -85,13 +85,14 @@ class RedditAction(BaseAction):
     def __init__(self, agent_id: int, channel: Channel) -> None:
         super().__init__(agent_id, channel)
 
-    async def create_post(self, content: str) -> Dict[str, Any]:
-        """Submit a new post.
+    async def create_post(self, content: str, subreddit_name: str = "") -> Dict[str, Any]:
+        """Submit a new post to a subreddit.
 
         content: The text of your post.
+        subreddit_name: The subreddit to post in (e.g. "technology"). Leave empty for the general feed.
         """
         return await self.perform_action(
-            {"content": content},
+            {"content": content, "subreddit_name": subreddit_name},
             ActionType.CREATE_POST,
         )
 
@@ -139,6 +140,49 @@ class RedditAction(BaseAction):
     async def trend(self) -> Dict[str, Any]:
         """Browse the current trending/hot posts."""
         return await self.perform_action({}, ActionType.TREND)
+
+    async def create_subreddit(self, name: str, description: str = "", similar_to: str = "") -> Dict[str, Any]:
+        """Create a new subreddit community. Only do this if no existing subreddit fits your topic.
+
+        name: The subreddit name (e.g. "technology", "cooking"). No spaces, lowercase.
+        description: A short description of what the subreddit is about.
+        similar_to: Comma-separated names of existing similar subreddits for cross-promotion (e.g. "programming,webdev").
+        """
+        similar_list = [s.strip() for s in similar_to.split(",") if s.strip()] if similar_to else []
+        return await self.perform_action(
+            {"name": name, "description": description, "similar_to": similar_list},
+            ActionType.CREATE_SUBREDDIT,
+        )
+
+    async def follow_subreddit(self, subreddit_name: str) -> Dict[str, Any]:
+        """Join a subreddit to see its posts in your feed.
+
+        subreddit_name: The name of the subreddit to follow (e.g. "technology").
+        """
+        return await self.perform_action(
+            {"subreddit_name": subreddit_name},
+            ActionType.FOLLOW_SUBREDDIT,
+        )
+
+    async def unfollow_subreddit(self, subreddit_name: str) -> Dict[str, Any]:
+        """Leave a subreddit you no longer want in your feed.
+
+        subreddit_name: The name of the subreddit to unfollow.
+        """
+        return await self.perform_action(
+            {"subreddit_name": subreddit_name},
+            ActionType.UNFOLLOW_SUBREDDIT,
+        )
+
+    async def browse_subreddit(self, subreddit_name: str = "") -> Dict[str, Any]:
+        """Browse posts in a specific subreddit, or browse your home feed across all subreddits you follow.
+
+        subreddit_name: The subreddit to browse (e.g. "technology"). Leave empty to browse your combined home feed.
+        """
+        return await self.perform_action(
+            {"subreddit_name": subreddit_name},
+            ActionType.BROWSE_SUBREDDIT,
+        )
 
     async def do_nothing(self) -> Dict[str, Any]:
         """Skip this turn and take no action."""
