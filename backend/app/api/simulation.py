@@ -155,7 +155,7 @@ def prepare_simulation():
                 polymarket_config = project.polymarket_config
 
             sim_config = config_gen.generate(
-                profiles=[asdict(p) for p in profiles],
+                profiles=[asdict(p) for p in stakeholders + crowd],
                 simulation_requirement=state.simulation_requirement,
                 max_rounds=config.default_max_rounds,
                 polymarket_config=polymarket_config,
@@ -167,7 +167,7 @@ def prepare_simulation():
             sm.save(state)
 
             TaskManager.update(task.task_id, status="completed", progress=100,
-                               result={"profile_count": len(profiles)})
+                               result={"profile_count": len(stakeholders) + len(crowd)})
         except Exception as e:
             logger.error(f"Preparation failed: {e}", exc_info=True)
             TaskManager.update(task.task_id, status="failed", error=str(e))
