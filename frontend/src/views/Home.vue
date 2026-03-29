@@ -1,20 +1,27 @@
 <template>
   <div class="home">
     <div class="warning-stripes"></div>
-    <div class="hero">
-      <h1 class="title">WHALESWARM</h1>
-      <p class="subtitle">Prediction Market Swarm Intelligence</p>
-      <p class="description">
-        Pick a Polymarket prediction. Inject a fictional event. Watch how AI agents
-        shift the market across Twitter, Reddit, and Polymarket.
-      </p>
+    <div class="split">
+      <!-- Left: Branding -->
+      <div class="brand-side">
+        <div class="brand-content">
+          <h1 class="logo">WHALE<br/>SWARM</h1>
+          <div class="tagline">Prediction Market<br/>Swarm Intelligence</div>
+          <p class="blurb">
+            Pick a Polymarket prediction. Inject a fictional event.
+            Watch AI agents shift the market as they deliberate across Twitter and Reddit.
+          </p>
+          <div class="decorative-line"></div>
+        </div>
+      </div>
 
-      <div class="setup-section card">
-        <div class="card-header">NEW EXPERIMENT</div>
+      <!-- Right: Experiment -->
+      <div class="form-side">
+        <div class="form-panel">
+          <div class="panel-header">NEW EXPERIMENT</div>
 
-        <!-- Step 1: Market Search -->
-        <div class="form-group">
-          <label>Search Polymarket</label>
+          <!-- Step 1: Search -->
+          <label class="field-label">Search Polymarket</label>
           <div class="search-row">
             <input
               v-model="marketQuery"
@@ -25,67 +32,41 @@
               {{ searching ? '...' : 'SEARCH' }}
             </button>
           </div>
-        </div>
 
-        <!-- Market Results -->
-        <div v-if="marketResults.length > 0" class="market-results">
-          <div
-            v-for="(m, i) in marketResults"
-            :key="i"
-            class="market-card"
-            :class="{ selected: selectedMarket === m }"
-            @click="selectedMarket = m"
-          >
-            <div class="market-question">{{ m.question || m.title }}</div>
-            <div class="market-meta">
-              <span class="price-tag yes">YES {{ formatPrice(m) }}</span>
-              <span class="price-tag no">NO {{ formatNoPrice(m) }}</span>
-              <span v-if="m.volume" class="volume">Vol: ${{ formatVolume(m.volume) }}</span>
+          <!-- Market Results -->
+          <div v-if="marketResults.length > 0" class="market-list">
+            <div
+              v-for="(m, i) in marketResults"
+              :key="i"
+              class="market-card"
+              :class="{ selected: selectedMarket === m }"
+              @click="selectedMarket = m"
+            >
+              <div class="market-q">{{ m.question || m.title }}</div>
+              <div class="market-row">
+                <span class="pill yes">YES {{ formatPrice(m) }}</span>
+                <span class="pill no">NO {{ formatNoPrice(m) }}</span>
+                <span v-if="m.volume" class="vol">Vol ${{ formatVolume(m.volume) }}</span>
+              </div>
             </div>
           </div>
-        </div>
 
-        <div v-if="searchDone && marketResults.length === 0" class="no-results">
-          No markets found. Try a different search term.
-        </div>
-
-        <!-- Step 2: Fictional Event -->
-        <div v-if="selectedMarket" class="form-group event-section">
-          <label>Fictional Event (injected mid-simulation)</label>
-          <textarea
-            v-model="fictionalEvent"
-            rows="3"
-            placeholder="e.g., SEC announces full approval of all Bitcoin spot ETFs..."
-          ></textarea>
-          <div class="round-row">
-            <label class="inline-label">Inject at round</label>
-            <input
-              v-model.number="eventRound"
-              type="number"
-              min="1"
-              max="9"
-              class="round-input"
-            />
-            <span class="round-hint">of 10</span>
+          <div v-if="searchDone && marketResults.length === 0" class="empty">
+            No markets found. Try a different term.
           </div>
+
+          <template v-if="selectedMarket">
+            <button
+              class="btn btn-primary launch-btn"
+              :disabled="loading"
+              @click="launch"
+            >
+              {{ loading ? loadingMsg : 'LAUNCH EXPERIMENT' }}
+            </button>
+          </template>
+
+          <div v-if="error" class="error-msg">{{ error }}</div>
         </div>
-
-        <!-- Step 3: Launch -->
-        <div v-if="selectedMarket" class="form-group">
-          <label>Project Name (optional)</label>
-          <input v-model="projectName" placeholder="My Experiment" />
-        </div>
-
-        <button
-          v-if="selectedMarket"
-          class="btn btn-primary launch-btn"
-          :disabled="!fictionalEvent.trim() || loading"
-          @click="launch"
-        >
-          {{ loading ? loadingMsg : 'LAUNCH EXPERIMENT' }}
-        </button>
-
-        <div v-if="error" class="error-msg">{{ error }}</div>
       </div>
     </div>
     <div class="warning-stripes"></div>
@@ -104,9 +85,6 @@ export default {
       selectedMarket: null,
       searching: false,
       searchDone: false,
-      fictionalEvent: '',
-      eventRound: 5,
-      projectName: '',
       loading: false,
       loadingMsg: 'Processing...',
       error: null,
@@ -159,9 +137,6 @@ export default {
       try {
         const res = await polymarketSetup({
           market: this.selectedMarket,
-          fictional_event: this.fictionalEvent,
-          event_round: this.eventRound,
-          project_name: this.projectName || undefined,
         })
         this.$router.push(`/process/${res.data.project_id}`)
       } catch (e) {
@@ -181,54 +156,103 @@ export default {
   flex-direction: column;
 }
 
-.hero {
+.split {
   flex: 1;
   display: flex;
-  flex-direction: column;
+  min-height: 0;
+}
+
+/* ---- Left: Brand ---- */
+.brand-side {
+  flex: 0 0 42%;
+  display: flex;
   align-items: center;
-  padding: var(--space-5) var(--space-3);
-  gap: var(--space-3);
+  justify-content: center;
+  padding: var(--space-5);
+  position: relative;
+  overflow: hidden;
 }
 
-.title {
+.brand-side::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at 30% 50%, rgba(255, 107, 26, 0.06) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+.brand-content {
+  position: relative;
+  max-width: 380px;
+}
+
+.logo {
   font-family: var(--font-display);
-  font-size: 56px;
+  font-size: 72px;
+  line-height: 0.95;
   color: var(--primary);
-  letter-spacing: 4px;
-  margin-top: var(--space-4);
-}
-
-.subtitle {
-  font-size: 14px;
-  color: var(--muted);
-  letter-spacing: 2px;
-  text-transform: uppercase;
-}
-
-.description {
-  max-width: 550px;
-  text-align: center;
-  color: var(--text-secondary);
-  font-size: 13px;
-  margin-bottom: var(--space-2);
-}
-
-.setup-section {
-  width: 100%;
-  max-width: 640px;
-}
-
-.form-group {
+  letter-spacing: 3px;
   margin-bottom: var(--space-3);
 }
 
-.form-group label {
+.tagline {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 3px;
+  color: var(--muted);
+  line-height: 1.6;
+  margin-bottom: var(--space-4);
+}
+
+.blurb {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+
+.decorative-line {
+  margin-top: var(--space-4);
+  width: 48px;
+  height: 2px;
+  background: var(--primary);
+  opacity: 0.4;
+}
+
+/* ---- Right: Form ---- */
+.form-side {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+  border-left: 1px solid var(--border);
+}
+
+.form-panel {
+  width: 100%;
+  max-width: 520px;
+}
+
+.panel-header {
+  font-family: var(--font-display);
+  font-size: 20px;
+  color: var(--primary);
+  margin-bottom: var(--space-3);
+}
+
+.field-label {
   display: block;
   font-size: 11px;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 1px;
   margin-bottom: var(--space-1);
+  margin-top: var(--space-3);
+}
+
+.field-label:first-of-type {
+  margin-top: 0;
 }
 
 .search-row {
@@ -240,22 +264,23 @@ export default {
   flex: 1;
 }
 
-/* Market results */
-.market-results {
+/* ---- Market list ---- */
+.market-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
-  margin-bottom: var(--space-3);
-  max-height: 320px;
+  gap: 6px;
+  margin-top: var(--space-2);
+  max-height: 280px;
   overflow-y: auto;
+  padding-right: 4px;
 }
 
 .market-card {
-  padding: var(--space-2);
+  padding: 10px 12px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: border-color 0.15s, background 0.15s;
 }
 
 .market-card:hover {
@@ -264,93 +289,102 @@ export default {
 
 .market-card.selected {
   border-color: var(--primary);
-  background: rgba(255, 107, 26, 0.06);
+  background: rgba(255, 107, 26, 0.05);
 }
 
-.market-question {
-  font-size: 13px;
-  color: var(--text);
+.market-q {
+  font-size: 12px;
   font-weight: 600;
-  margin-bottom: 4px;
-  line-height: 1.3;
+  color: var(--text);
+  line-height: 1.35;
+  margin-bottom: 6px;
 }
 
-.market-meta {
+.market-row {
   display: flex;
-  gap: var(--space-2);
   align-items: center;
+  gap: var(--space-2);
 }
 
-.price-tag {
-  font-size: 11px;
+.pill {
+  font-size: 10px;
   font-weight: 700;
-  padding: 1px 6px;
+  padding: 2px 7px;
   border-radius: 3px;
   font-variant-numeric: tabular-nums;
+  letter-spacing: 0.3px;
 }
 
-.price-tag.yes {
-  background: rgba(67, 193, 101, 0.15);
+.pill.yes {
+  background: rgba(67, 193, 101, 0.12);
   color: var(--accent);
 }
 
-.price-tag.no {
-  background: rgba(229, 62, 62, 0.15);
+.pill.no {
+  background: rgba(229, 62, 62, 0.12);
   color: var(--danger);
 }
 
-.volume {
-  font-size: 11px;
+.vol {
+  font-size: 10px;
   color: var(--muted);
+  margin-left: auto;
 }
 
-.no-results {
+.empty {
   color: var(--muted);
   font-size: 12px;
   text-align: center;
-  padding: var(--space-3);
+  padding: var(--space-3) 0;
 }
 
-/* Event section */
-.event-section {
-  border-top: 1px solid var(--border);
-  padding-top: var(--space-3);
-}
-
-.round-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  margin-top: var(--space-1);
-}
-
-.inline-label {
-  font-size: 12px !important;
-  color: var(--text-secondary) !important;
-  text-transform: none !important;
-  letter-spacing: 0 !important;
-  margin-bottom: 0 !important;
-}
-
-.round-input {
-  width: 60px;
-  text-align: center;
-}
-
-.round-hint {
-  font-size: 12px;
-  color: var(--muted);
-}
-
+/* ---- Launch ---- */
 .launch-btn {
   width: 100%;
-  font-size: 14px;
+  margin-top: var(--space-3);
   padding: var(--space-2);
+  font-size: 13px;
 }
 
 .error-msg {
   margin-top: var(--space-2);
   color: var(--danger);
   font-size: 12px;
+}
+
+/* ---- Responsive ---- */
+@media (max-width: 860px) {
+  .split {
+    flex-direction: column;
+  }
+
+  .brand-side {
+    flex: none;
+    padding: var(--space-4) var(--space-3) var(--space-3);
+    text-align: center;
+  }
+
+  .brand-content {
+    max-width: 100%;
+  }
+
+  .logo {
+    font-size: 48px;
+    display: inline;
+  }
+
+  .logo br {
+    display: none;
+  }
+
+  .decorative-line {
+    margin: var(--space-3) auto 0;
+  }
+
+  .form-side {
+    border-left: none;
+    border-top: 1px solid var(--border);
+    padding: var(--space-3);
+  }
 }
 </style>

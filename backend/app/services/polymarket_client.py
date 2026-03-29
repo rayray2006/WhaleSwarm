@@ -97,6 +97,8 @@ class PolymarketClient:
         client-side.  Each event may contain multiple sub-markets; we
         flatten them and return the best matches.
         """
+        import json as _json
+
         try:
             resp = self.session.get(
                 "https://gamma-api.polymarket.com/events",
@@ -125,6 +127,12 @@ class PolymarketClient:
             # Check sub-markets within the event.
             markets = event.get("markets") or []
             for market in markets:
+                # Skip closed or resolved sub-markets
+                if market.get("closed") or market.get("resolved"):
+                    continue
+                if str(market.get("active", "true")).lower() == "false":
+                    continue
+
                 question = (market.get("question") or market.get("title") or "").lower()
                 text = f"{title} {question}"
                 # Score: count how many keywords match.
@@ -132,6 +140,15 @@ class PolymarketClient:
                 if hits > 0:
                     # Attach event-level metadata to market for display.
                     market["_event_title"] = event.get("title", "")
+
+                    # Parse outcomePrices from JSON string to real array
+                    prices = market.get("outcomePrices")
+                    if isinstance(prices, str):
+                        try:
+                            market["outcomePrices"] = _json.loads(prices)
+                        except (ValueError, TypeError):
+                            pass
+
                     scored.append((hits, market))
 
         # Sort by keyword hits descending, then take top N.

@@ -240,8 +240,6 @@ def polymarket_setup():
 
     if not market:
         return jsonify({"error": "market is required"}), 400
-    if not fictional_event:
-        return jsonify({"error": "fictional_event is required"}), 400
 
     market_question = market.get("question", market.get("title", ""))
     if not market_question:
