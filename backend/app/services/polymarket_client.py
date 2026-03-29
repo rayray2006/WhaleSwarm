@@ -183,10 +183,21 @@ class PolymarketClient:
             return None
 
         # Extract token IDs from outcomes
+        import json as _json
         tokens = market.get("clobTokenIds")
+        if isinstance(tokens, str):
+            try:
+                tokens = _json.loads(tokens)
+            except (ValueError, TypeError):
+                tokens = None
         if not tokens or len(tokens) < 2:
             # Try alternative field names
             tokens = market.get("clob_token_ids")
+            if isinstance(tokens, str):
+                try:
+                    tokens = _json.loads(tokens)
+                except (ValueError, TypeError):
+                    tokens = None
 
         if not tokens or len(tokens) < 2:
             logger.warning(f"Market found but no token IDs: {market.get('question', '?')}")

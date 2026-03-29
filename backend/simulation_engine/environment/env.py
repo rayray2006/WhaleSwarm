@@ -466,10 +466,15 @@ class OasisEnv:
         """
         bundle = self.platforms.get("polymarket")
         if bundle is None or self.whale_trader is None:
+            logger.info("[CLOB-DEBUG] _peg_amm_to_real SKIPPED: bundle=%s, whale_trader=%s",
+                        bundle is not None, self.whale_trader is not None)
             return
 
         real_price = await self._fetch_real_price(market_id)
+        logger.info("[CLOB-DEBUG] _peg_amm_to_real round %d market %d: real_price=%s",
+                    round_num, market_id, real_price)
         if real_price is None:
+            logger.info("[CLOB-DEBUG] _peg_amm_to_real: real_price is None — NO PEGGING THIS ROUND")
             return
 
         # Get or create volume tracker for this market.
@@ -494,14 +499,26 @@ class OasisEnv:
         if sim_vol_row:
             tracker.simulated_volume_since_anchor = float(sim_vol_row["vol"])
 
+        logger.info(
+            "[CLOB-DEBUG] _peg_amm_to_real: real_volume=%.2f, sim_vol=%.2f, "
+            "last_real_cumulative_vol=%.2f, last_anchor_round=%d",
+            real_volume, tracker.simulated_volume_since_anchor,
+            tracker.last_real_cumulative_volume, tracker.last_anchor_round,
+        )
+
         if not tracker.should_anchor(real_volume):
-            logger.debug(
-                "Volume threshold not met for market %d — skipping peg", market_id,
+            logger.info(
+                "[CLOB-DEBUG] Volume threshold NOT met for market %d — SKIPPING peg "
+                "(real_vol=%.2f, sim_vol=%.2f)", market_id, real_volume,
+                tracker.simulated_volume_since_anchor,
             )
             return
 
+        logger.info("[CLOB-DEBUG] Volume threshold MET — executing whale peg to real_price=%.4f", real_price)
+
         # Execute the whale trade.
         summary = self.whale_trader.execute_peg(bundle.db, market_id, real_price)
+        logger.info("[CLOB-DEBUG] Whale trade result: %s", summary)
         if summary:
             self._log_action({
                 "type": "whale_trade",
@@ -637,6 +654,27 @@ class OasisEnv:
         # 1. Peg AMM to real Polymarket prices (whale trades with volume threshold).
         poly_bundle = self.platforms.get("polymarket")
         if poly_bundle is not None:
+            # Debug: log current AMM state before pegging
+            try:
+                _dbg_markets = poly_bundle.db.fetchall(
+                    "SELECT market_id, question, reserve_a, reserve_b FROM market WHERE resolved = 0"
+                )
+                for _dm in (_dbg_markets or []):
+                    _ra, _rb = _dm["reserve_a"], _dm["reserve_b"]
+                    _p = _rb / (_ra + _rb) if (_ra + _rb) > 0 else 0
+                    logger.info(
+                        "[CLOB-DEBUG] Round %d PRE-PEG market %d: reserves=(%.2f, %.2f) YES_price=%.4f",
+                        round_num, _dm["market_id"], _ra, _rb, _p,
+                    )
+            except Exception:
+                pass
+
+            logger.info(
+                "[CLOB-DEBUG] Round %d: whale_trader=%s, real_price_fetcher=%s",
+                round_num,
+                "SET" if self.whale_trader is not None else "NONE",
+                "SET" if self.real_price_fetcher is not None else "NONE",
+            )
             try:
                 markets = poly_bundle.db.fetchall(
                     "SELECT market_id FROM market WHERE resolved = 0"
@@ -650,8 +688,25 @@ class OasisEnv:
                         real_price = await self._fetch_real_price(mid)
                         if real_price is not None:
                             self._anchor_amm_to_real(mid, real_price)
+                        else:
+                            logger.info("[CLOB-DEBUG] Round %d: real_price is None for market %d (no pegging)", round_num, mid)
             except Exception:
                 logger.debug("No markets to anchor yet")
+
+            # Debug: log AMM state after pegging
+            try:
+                _dbg_markets = poly_bundle.db.fetchall(
+                    "SELECT market_id, reserve_a, reserve_b FROM market WHERE resolved = 0"
+                )
+                for _dm in (_dbg_markets or []):
+                    _ra, _rb = _dm["reserve_a"], _dm["reserve_b"]
+                    _p = _rb / (_ra + _rb) if (_ra + _rb) > 0 else 0
+                    logger.info(
+                        "[CLOB-DEBUG] Round %d POST-PEG market %d: reserves=(%.2f, %.2f) YES_price=%.4f",
+                        round_num, _dm["market_id"], _ra, _rb, _p,
+                    )
+            except Exception:
+                pass
 
         # 3. Update bridge with latest prices and sentiment.
         if poly_bundle is not None:
@@ -828,6 +883,64 @@ class OasisEnv:
             "agents_active": len(all_tasks),
             "action_counts": action_counts,
         })
+
+        # [CLOB-DEBUG] End-of-round P&L snapshot for all polymarket agents
+        if poly_bundle is not None:
+            try:
+                _dbg_mkt = poly_bundle.db.fetchone(
+                    "SELECT market_id, reserve_a, reserve_b, question FROM market WHERE resolved = 0 LIMIT 1"
+                )
+                if _dbg_mkt:
+                    _ra, _rb = _dbg_mkt["reserve_a"], _dbg_mkt["reserve_b"]
+                    _yes_p = _rb / (_ra + _rb) if (_ra + _rb) > 0 else 0
+                    _mid = _dbg_mkt["market_id"]
+                    logger.info("[CLOB-DEBUG] === ROUND %d P&L SNAPSHOT === market YES=%.4f", round_num, _yes_p)
+
+                    _portfolios = poly_bundle.db.fetchall(
+                        "SELECT p.user_id, p.balance, u.user_name FROM portfolio p "
+                        "JOIN user u ON p.user_id = u.user_id WHERE p.user_id >= 0"
+                    )
+                    for _pf in (_portfolios or []):
+                        _uid = _pf["user_id"]
+                        _bal = _pf["balance"]
+                        _positions = poly_bundle.db.fetchall(
+                            "SELECT outcome, shares FROM position WHERE user_id = ? AND market_id = ?",
+                            (_uid, _mid),
+                        )
+                        _pos_val = 0.0
+                        _pos_str = ""
+                        for _pos in (_positions or []):
+                            if _pos["outcome"].upper() in ("YES", _dbg_mkt.get("outcome_a", "YES").upper()):
+                                _pv = _pos["shares"] * _yes_p
+                            else:
+                                _pv = _pos["shares"] * (1 - _yes_p)
+                            _pos_val += _pv
+                            _pos_str += f" {_pos['outcome']}={_pos['shares']:.2f}sh(${_pv:.2f})"
+                        _total = _bal + _pos_val
+                        _pnl = _total - 1000.0  # initial balance
+                        logger.info(
+                            "[CLOB-DEBUG]   Agent %d (%s): cash=$%.2f positions=[%s] "
+                            "total=$%.2f PnL=$%.2f",
+                            _uid, _pf["user_name"], _bal, _pos_str.strip(), _total, _pnl,
+                        )
+
+                    # Also log all trades this round
+                    _trades = poly_bundle.db.fetchall(
+                        "SELECT t.user_id, u.user_name, t.side, t.outcome, t.shares, t.price, t.cost "
+                        "FROM trade t JOIN user u ON t.user_id = u.user_id "
+                        "WHERE t.market_id = ? ORDER BY t.rowid DESC LIMIT 20",
+                        (_mid,),
+                    )
+                    if _trades:
+                        logger.info("[CLOB-DEBUG]   Recent trades:")
+                        for _t in _trades:
+                            logger.info(
+                                "[CLOB-DEBUG]     user=%d(%s) %s %s %.2f shares @ $%.4f cost=$%.2f",
+                                _t["user_id"], _t["user_name"], _t["side"], _t["outcome"],
+                                _t["shares"], _t["price"], _t["cost"],
+                            )
+            except Exception as _dbg_e:
+                logger.warning("[CLOB-DEBUG] P&L snapshot failed: %s", _dbg_e)
 
         logger.info("Round %d complete: %s", round_num + 1, round_summary)
         return round_summary

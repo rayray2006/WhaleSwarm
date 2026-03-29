@@ -35,7 +35,7 @@
         type="number"
         min="2"
         max="50"
-        placeholder="10"
+        placeholder="2"
         :disabled="generating"
       />
     </div>
@@ -99,7 +99,7 @@ export default {
     return {
       simName: '',
       numRounds: 50,
-      numAgents: 10,
+      numAgents: 2,
       platforms: ['twitter', 'reddit', 'polymarket'],
       generating: false,
       simulationId: null,
