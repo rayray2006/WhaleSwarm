@@ -837,13 +837,15 @@ class OasisEnv:
     # ------------------------------------------------------------------
 
     def _inject_initial_subreddits(self) -> None:
-        """Seed subreddits from simulation topics so agents have communities to join."""
+        """Seed subreddits from simulation topics and auto-subscribe agents."""
         bundle = self.platforms.get("reddit")
         if bundle is None or not isinstance(bundle.platform, SocialPlatform):
             return
 
-        for topic in self.topics[:5]:
-            name = topic.lower().replace(" ", "_")[:30]
+        subreddit_names = []
+        for topic in self.topics[:10]:
+            name = topic.lower().replace(" ", "_").replace("-", "_")[:30]
+            name = "".join(c for c in name if c.isalnum() or c == "_")
             if not name:
                 continue
             bundle.platform.create_subreddit(0, {
@@ -851,8 +853,31 @@ class OasisEnv:
                 "description": f"Discussion about {topic}",
                 "similar_to": [],
             })
-        if self.topics:
-            logger.info("Seeded %d initial subreddits from topics", min(5, len(self.topics)))
+            subreddit_names.append(name)
+
+        # Also create a general discussion subreddit
+        general_name = "general_discussion"
+        bundle.platform.create_subreddit(0, {
+            "name": general_name,
+            "description": "General discussion and off-topic conversation",
+            "similar_to": [],
+        })
+        subreddit_names.append(general_name)
+
+        # Auto-subscribe all Reddit agents to all seeded subreddits so their
+        # feeds are populated from round 1.
+        for agent in bundle.agents:
+            for sname in subreddit_names:
+                try:
+                    bundle.platform.follow_subreddit(agent.agent_id, {"subreddit_name": sname})
+                except Exception:
+                    pass  # already following or subreddit doesn't exist
+
+        if subreddit_names:
+            logger.info(
+                "Seeded %d subreddits, auto-subscribed %d agents",
+                len(subreddit_names), len(bundle.agents),
+            )
 
     async def _inject_initial_posts(self) -> None:
         """Inject seed posts from event config into social platforms."""
@@ -860,19 +885,36 @@ class OasisEnv:
         if not initial_posts:
             return
 
+        # For Reddit, find seeded subreddit IDs so posts land in communities.
+        reddit_subreddit_ids = []
+        reddit_bundle = self.platforms.get("reddit")
+        if reddit_bundle:
+            try:
+                rows = reddit_bundle.db.fetchall("SELECT subreddit_id FROM subreddit")
+                reddit_subreddit_ids = [r["subreddit_id"] for r in (rows or [])]
+            except Exception:
+                pass
+
         for pname in ("twitter", "reddit"):
             bundle = self.platforms.get(pname)
             if bundle is None or not bundle.agents:
                 continue
 
             for i, post_text in enumerate(initial_posts):
-                # Assign to a random agent on this platform.
                 agent = random.choice(bundle.agents)
                 try:
-                    bundle.db.execute(
-                        "INSERT INTO post (user_id, content, created_at) VALUES (?, ?, ?)",
-                        (agent.agent_id, post_text, datetime.utcnow().isoformat()),
-                    )
+                    if pname == "reddit" and reddit_subreddit_ids:
+                        # Assign posts to subreddits round-robin
+                        sub_id = reddit_subreddit_ids[i % len(reddit_subreddit_ids)]
+                        bundle.db.execute(
+                            "INSERT INTO post (user_id, content, subreddit_id, created_at) VALUES (?, ?, ?, ?)",
+                            (agent.agent_id, post_text, sub_id, datetime.utcnow().isoformat()),
+                        )
+                    else:
+                        bundle.db.execute(
+                            "INSERT INTO post (user_id, content, created_at) VALUES (?, ?, ?)",
+                            (agent.agent_id, post_text, datetime.utcnow().isoformat()),
+                        )
                     self._log_action({
                         "type": "initial_post",
                         "platform": pname,

@@ -45,18 +45,24 @@ class TwitterPromptBuilder(BasePromptBuilder):
             when it fits your character. Use hashtags sparingly. Quote-tweet
             to add your take. Like things that genuinely resonate.
 
-            Most of the time you scroll past things. You do NOT engage with
-            every post. do_nothing is your default — only act when something
-            genuinely triggers a reaction from your character.
+            You browse your feed and engage when something catches your eye.
+            Liking is low effort — do it when you see content you agree with
+            or find interesting. Quote-tweeting is how you add your voice to
+            the conversation. Original posts are for when you have something
+            to say that nobody else has said yet.
+
+            If nothing in your feed is worth engaging with, just scroll past.
+            But when something connects to your interests or expertise,
+            don't hold back — react, comment, or share your take.
 
             ===== AVAILABLE ACTIONS =====
             Choose exactly ONE:
             - create_post(content) — Tweet something (max 280 chars). Hot takes, reactions, breaking news. Keep it punchy.
-            - like_post(post_id) — Like a tweet. Do this when you agree or it made you laugh.
+            - like_post(post_id) — Like a tweet. Do this when you agree, find it funny, or it's useful.
             - repost(post_id) — Retweet without comment. Signal boost.
             - quote_post(post_id, content) — Quote-tweet with your take (max 280 chars). This is how you add commentary.
             - follow(followee_id) — Follow someone interesting.
-            - do_nothing() — Scroll past. THIS IS THE DEFAULT. Most rounds you should do this.
+            - do_nothing() — Scroll past. Fine if nothing in your feed warrants a reaction.
 
             IMPORTANT: Stay in character. Be authentic to your persona. Do NOT write generic corporate-sounding tweets.
         """)
@@ -87,27 +93,31 @@ class RedditPromptBuilder(BasePromptBuilder):
             topics. You join subreddits that match your interests and post/comment
             within them.
 
-            Your primary action is COMMENTING on posts — that's how Reddit works.
-            Posts start conversations; comments ARE the conversation. Write
-            substantive comments (3-5 sentences minimum). Share your expertise.
-            Disagree respectfully with reasoning. Ask probing questions. Use Reddit
-            conventions: "IMO", "FWIW", "IANAL", "ELI5", "source?" when appropriate.
+            You browse subreddits and engage when something connects to your
+            interests or expertise. Your primary actions are COMMENTING and
+            UPVOTING — that's how Reddit works. Posts start conversations;
+            comments ARE the conversation.
 
-            Browsing is natural — real Redditors browse their feed and specific
-            subreddits. When nothing in your feed catches your eye, do_nothing or
-            browse_subreddit to see what's new. But when something interests you,
-            ENGAGE — comment, upvote, or post.
+            Write comments in your voice — 2-4 sentences is fine, longer if you
+            have real expertise to share. Disagree with reasoning. Ask probing
+            questions. Use Reddit conventions: "IMO", "FWIW", "IANAL", "source?"
+            when appropriate.
 
-            Upvote good content. Downvote misinformation or low-effort posts
-            (NOT things you merely disagree with — that's not how Reddit works).
+            Upvote good content, good arguments, useful information. Downvote
+            misinformation or low-effort posts (NOT things you merely disagree
+            with). When you have a strong take on the topic, create a post in a
+            relevant subreddit.
+
+            If nothing in your feed is worth engaging with, just browse or lurk.
+            But don't hold back when you have something valuable to add.
 
             ===== AVAILABLE ACTIONS =====
             Choose exactly ONE:
 
             ENGAGEMENT (this is how you participate):
-            - create_comment(post_id, content) — Reply to a post. THIS IS YOUR BREAD AND BUTTER. Write substantive, in-character comments. 3-5 sentences minimum.
-            - create_post(content, subreddit_name) — Submit a new post to a subreddit. Only when you have something original to say.
-            - like_post(post_id) — Upvote quality content, good arguments, useful information.
+            - create_comment(post_id, content) — Reply to a post. This is your bread and butter. Write in-character comments.
+            - create_post(content, subreddit_name) — Submit a new post to a subreddit. When you have a take, question, or news to share.
+            - like_post(post_id) — Upvote good content, useful arguments, interesting posts.
             - dislike_post(post_id) — Downvote misinformation, spam, or genuinely bad content only.
 
             BROWSING (discover content):
@@ -116,12 +126,11 @@ class RedditPromptBuilder(BasePromptBuilder):
             - trend() — Browse trending/hot posts.
 
             COMMUNITY:
-            - create_subreddit(name, description, similar_to) — Start a new subreddit. Only if no existing one fits your topic. Use similar_to for cross-promotion (e.g. "programming,webdev").
             - follow_subreddit(subreddit_name) — Join a subreddit to see its posts in your feed.
             - unfollow_subreddit(subreddit_name) — Leave a subreddit.
 
             DEFAULT:
-            - do_nothing() — Lurk. Most rounds you either lurk or casually browse.
+            - do_nothing() — Lurk. Fine if nothing in your feed warrants engagement.
 
             IMPORTANT: Stay in character. Write like a real Redditor, not an AI. Post in subreddits that match your interests.
         """)
