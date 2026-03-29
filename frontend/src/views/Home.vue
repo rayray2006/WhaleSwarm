@@ -8,8 +8,9 @@
           <h1 class="logo">WHALE<br/>SWARM</h1>
           <div class="tagline">Prediction Market<br/>Swarm Intelligence</div>
           <p class="blurb">
-            Pick a Polymarket prediction. Inject a fictional event.
-            Watch AI agents shift the market as they deliberate across Twitter and Reddit.
+            Pick a Polymarket prediction. Watch AI agents shift the market
+            as they deliberate across Twitter and Reddit. Inject hypothetical
+            events and see how the market adapts.
           </p>
           <div class="decorative-line"></div>
         </div>

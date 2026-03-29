@@ -130,6 +130,11 @@ class GraphBuilder:
 
         logger.info(f"NER complete: {len(all_entities)} entities, {len(all_edges)} edges")
 
+        # Fuzzy dedup pass: merge entities that refer to the same real-world
+        # actor (e.g. "USA" / "United States", "Lloyd Austin" / "Secretary Austin").
+        all_entities, all_edges = self._fuzzy_dedup(all_entities, all_edges)
+        logger.info(f"After fuzzy dedup: {len(all_entities)} entities")
+
         # Relevance filter: remove entities that don't directly influence
         # the market outcome.
         if market_question and len(all_entities) > 5:
@@ -319,6 +324,98 @@ class GraphBuilder:
 
         logger.info("Inferred %d missing edges", len(inferred))
         return inferred
+
+    def _fuzzy_dedup(
+        self,
+        entities: Dict[str, Dict],
+        edges: List[Dict],
+    ) -> tuple:
+        """Merge entities that refer to the same real-world actor.
+
+        Uses an LLM call to identify duplicates, then merges them by keeping
+        the longest/most specific name and combining summaries.
+        """
+        if len(entities) <= 3:
+            return entities, edges
+
+        names = list(entities.keys())
+        numbered = "\n".join(f"{i+1}. {n} ({entities[n].get('type', '?')})" for i, n in enumerate(names))
+
+        messages = [
+            {"role": "system", "content": (
+                "You are a deduplication expert. Given a list of entities from a "
+                "knowledge graph, identify groups that refer to the SAME real-world "
+                "person or organization. Common patterns:\n"
+                "- Full name vs title+lastname: 'Lloyd Austin' = 'Secretary Austin'\n"
+                "- Country name vs abbreviation: 'United States' = 'USA' = 'US'\n"
+                "- Org abbreviation vs full: 'NATO' = 'North Atlantic Treaty Organization'\n"
+                "- First name vs full name: 'Biden' = 'Joe Biden'\n\n"
+                "Only group entities you are CERTAIN refer to the same actor. "
+                "Return JSON."
+            )},
+            {"role": "user", "content": (
+                f"Find duplicate entities in this list:\n\n{numbered}\n\n"
+                f"Return a JSON object with:\n"
+                f'{{"groups": [["name1", "name2", ...], ["name3", "name4", ...], ...]}}\n\n'
+                f"Each inner array is a set of names that all refer to the same "
+                f"entity. Only include groups with 2+ names. If no duplicates, "
+                f'return {{"groups": []}}.'
+            )},
+        ]
+
+        try:
+            result = self.llm.complete_json(
+                messages, smart=False, temperature=0.1, max_tokens=4096,
+            )
+            if isinstance(result, list):
+                result = result[0] if result else {}
+            groups = result.get("groups", []) if isinstance(result, dict) else []
+        except Exception:
+            logger.debug("Fuzzy dedup LLM call failed, skipping")
+            return entities, edges
+
+        if not groups:
+            return entities, edges
+
+        # Build merge map: short/alternate name -> canonical (longest) name
+        merge_map = {}  # old_name -> canonical_name
+        for group in groups:
+            valid = [n for n in group if n in entities]
+            if len(valid) < 2:
+                continue
+            # Keep the longest name as canonical (most specific)
+            canonical = max(valid, key=len)
+            for name in valid:
+                if name != canonical:
+                    merge_map[name] = canonical
+
+        if not merge_map:
+            return entities, edges
+
+        logger.info("Fuzzy dedup merging %d entities: %s", len(merge_map), merge_map)
+
+        # Merge summaries into canonical
+        for old_name, canonical in merge_map.items():
+            old_ent = entities[old_name]
+            canon_ent = entities[canonical]
+            old_summary = old_ent.get("summary", "").strip()
+            parts = canon_ent.get("_summary_parts", [])
+            if old_summary and old_summary not in parts and len(parts) < 5:
+                parts.append(old_summary)
+                canon_ent["_summary_parts"] = parts
+                canon_ent["summary"] = " ".join(parts)
+            del entities[old_name]
+
+        # Rewrite edge references
+        for edge in edges:
+            src = edge.get("source_name", "")
+            tgt = edge.get("target_name", "")
+            if src in merge_map:
+                edge["source_name"] = merge_map[src]
+            if tgt in merge_map:
+                edge["target_name"] = merge_map[tgt]
+
+        return entities, edges
 
     def _process_chunk(
         self, chunk: str, entity_types: List[str], edge_types: List[str]

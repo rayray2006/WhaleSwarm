@@ -124,15 +124,24 @@ def prepare_simulation():
             logger.info("Generated %d crowd profiles", len(crowd))
 
             # Clean platform separation:
-            #   Twitter    = stakeholders only (they post takes that influence opinion)
-            #   Reddit     = crowd only (regular people who discuss and react)
-            #   Polymarket = everyone trades
+            #   Twitter    = all stakeholders (individuals + institutions post takes)
+            #   Reddit     = crowd + individual stakeholders (no institutional accounts)
+            #   Polymarket = crowd + individual stakeholders (institutions don't trade)
+            from app.services.oasis_profile_generator import GROUP_ENTITY_TYPES
+            individual_stakeholders = [
+                p for p in stakeholders
+                if p.profession.lower() not in GROUP_ENTITY_TYPES
+                and not any(kw in p.profession.lower() for kw in (
+                    "outlet", "company", "agency", "organization", "organisation",
+                    "studio", "publisher", "league", "ngo", "think tank", "thinktank",
+                ))
+            ]
             sm.save_profiles(simulation_id,
                 [p.to_twitter_format() for p in stakeholders], "twitter")
             sm.save_profiles(simulation_id,
-                [p.to_reddit_format() for p in crowd], "reddit")
+                [p.to_reddit_format() for p in individual_stakeholders + crowd], "reddit")
             sm.save_profiles(simulation_id,
-                [p.to_polymarket_format() for p in stakeholders + crowd], "polymarket")
+                [p.to_polymarket_format() for p in individual_stakeholders + crowd], "polymarket")
             sm.save_profiles(simulation_id,
                 [asdict(p) for p in stakeholders + crowd], "all")
 

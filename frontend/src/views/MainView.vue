@@ -7,14 +7,17 @@
         <h2 class="page-title">{{ project?.name || 'Loading...' }}</h2>
         <span class="tag">{{ project?.status }}</span>
       </div>
-      <div class="toolbar-right">
-        <button
-          v-for="m in ['graph', 'split', 'workbench']"
-          :key="m"
-          class="btn"
-          :class="{ 'btn-primary': mode === m }"
-          @click="mode = m"
-        >{{ m.toUpperCase() }}</button>
+      <div class="toolbar-right"></div>
+    </div>
+
+    <!-- Preparing overlay -->
+    <div v-if="preparing" class="preparing-banner">
+      <div class="preparing-inner">
+        <div class="spinner"></div>
+        <span>Generating agent profiles... This may take a minute.</span>
+      </div>
+      <div class="prepare-bar">
+        <div class="prepare-bar-fill" :style="{ width: prepareProgress + '%' }"></div>
       </div>
     </div>
 
@@ -36,7 +39,8 @@
         <Step2EnvSetup
           v-if="step === 2"
           :entities="entities"
-          @proceed="goToSimulation"
+          :preparing="preparing"
+          @proceed="startPrepare"
         />
       </div>
     </div>
@@ -45,6 +49,7 @@
 
 <script>
 import { getProject, getTask, getGraph, buildGraph } from '../api/graph'
+import { createSimulation, prepareSimulation, prepareStatus } from '../api/simulation'
 import GraphPanel from '../components/GraphPanel.vue'
 import Step1GraphBuild from '../components/Step1GraphBuild.vue'
 import Step2EnvSetup from '../components/Step2EnvSetup.vue'
@@ -62,6 +67,10 @@ export default {
       buildProgress: 0,
       buildTaskId: null,
       pollTimer: null,
+      preparing: false,
+      prepareProgress: 0,
+      prepareTaskId: null,
+      preparePollTimer: null,
     }
   },
   computed: {
@@ -79,6 +88,7 @@ export default {
   },
   beforeUnmount() {
     if (this.pollTimer) clearInterval(this.pollTimer)
+    if (this.preparePollTimer) clearInterval(this.preparePollTimer)
   },
   methods: {
     async loadProject() {
@@ -137,15 +147,45 @@ export default {
         }
       }, 2000)
     },
-    goToSimulation() {
-      this.$router.push(`/simulation/${this.project.project_id}`)
+    async startPrepare() {
+      this.preparing = true
+      this.prepareProgress = 0
+      try {
+        const createRes = await createSimulation({ project_id: this.project.project_id })
+        const simId = createRes.data.simulation_id
+
+        const prepRes = await prepareSimulation({ simulation_id: simId })
+        this.prepareTaskId = prepRes.data.task_id
+
+        this.preparePollTimer = setInterval(async () => {
+          try {
+            const res = await prepareStatus({ task_id: this.prepareTaskId })
+            const data = res.data
+            this.prepareProgress = data.progress || 0
+
+            if (data.status === 'completed') {
+              clearInterval(this.preparePollTimer)
+              this.$router.push(`/simulation/${simId}`)
+            } else if (data.status === 'failed') {
+              clearInterval(this.preparePollTimer)
+              this.preparing = false
+              console.error('Prepare failed:', data.error)
+            }
+          } catch (e) {
+            console.error('Prepare poll error:', e)
+          }
+        }, 3000)
+      } catch (e) {
+        this.preparing = false
+        console.error('Failed to start preparation:', e)
+      }
     },
   },
 }
 </script>
 
 <style scoped>
-.main-view { min-height: 100vh; display: flex; flex-direction: column; }
+.main-view { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
 .toolbar {
   display: flex; justify-content: space-between; align-items: center;
   padding: var(--space-2) var(--space-3);
@@ -155,10 +195,48 @@ export default {
 .toolbar-right { display: flex; gap: var(--space-1); }
 .page-title { font-family: var(--font-display); color: var(--primary); font-size: 18px; }
 
+.preparing-banner {
+  background: var(--surface);
+  border-bottom: 1px solid var(--warning);
+  padding: var(--space-2) var(--space-3);
+  flex-shrink: 0;
+}
+.preparing-inner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--warning);
+  font-size: 13px;
+  margin-bottom: var(--space-1);
+}
+.prepare-bar {
+  height: 3px;
+  background: var(--surface-raised);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.prepare-bar-fill {
+  height: 100%;
+  background: var(--warning);
+  transition: width 0.5s ease;
+}
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--warning);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 .layout { flex: 1; display: flex; overflow: hidden; }
 .layout.graph .graph-pane { flex: 1; }
 .layout.split .graph-pane { flex: 1; }
-.layout.split .work-pane { width: 400px; border-left: 1px solid var(--border); padding: var(--space-3); overflow-y: auto; }
+.layout.split .work-pane { width: 400px; border-left: 1px solid var(--border); padding: var(--space-3); overflow: hidden; display: flex; flex-direction: column; }
 .layout.workbench .work-pane { flex: 1; padding: var(--space-3); overflow-y: auto; }
 .graph-pane { min-height: 400px; }
 </style>

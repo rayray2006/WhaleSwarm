@@ -11,10 +11,25 @@ NER_SYSTEM_PROMPT = """You are a Named Entity Recognition (NER) system. Extract 
 
 IMPORTANT RULES:
 1. Only extract entities matching the provided ontology types.
-2. Entities must be real-world actors who could plausibly have social media accounts (people, organizations, companies, etc.), NOT abstract concepts.
+2. Entities must be SPECIFIC, NAMED real-world actors who could plausibly have social media accounts (people, organizations, companies, etc.).
 3. Each entity needs a name, type (from the ontology), a brief summary, and optional attributes.
 4. Each relationship needs a source entity name, target entity name, type (from the ontology), and a fact description.
 5. If no entities or relationships are found, return empty lists.
+
+NEVER EXTRACT THESE — they are NOT entities:
+- Abstract concepts or phenomena: "Iranian Aggression", "Market Volatility", "Climate Change", "Inflation"
+- Vague categories: "The Media", "The Public", "Analysts", "Investors", "Critics"
+- Economies or sectors: "Iranian Economy", "Tech Sector", "Oil Market", "Housing Market"
+- Policies or events: "Sanctions", "Ceasefire", "Trade War", "The Election"
+- Geographic areas used as actors: "Iran", "Russia", "Europe", "The West"
+
+INSTEAD, extract the SPECIFIC people and organizations behind them:
+- "Iranian Aggression" → extract "Ayatollah Khamenei" (Politician), "IRGC" (GovernmentAgency)
+- "The Media" → extract "CNN" (MediaOutlet), "Reuters" (MediaOutlet)
+- "Iranian Economy" → extract "Central Bank of Iran" (GovernmentAgency), specific analysts
+- "Analysts" → extract specific named analysts like "Mohamed El-Erian" (Analyst)
+
+Every entity MUST have a proper noun name — a name you could Google and find a real person or organization.
 
 ONTOLOGY:
 Entity types: {entity_types}
@@ -49,7 +64,14 @@ class NERExtractor:
 
         messages = [
             {"role": "system", "content": system_msg},
-            {"role": "user", "content": f"Extract entities and relationships from this text:\n\n{text}"},
+            {"role": "user", "content": (
+                f"Extract ALL entities and relationships from this text. Be thorough — "
+                f"extract every named person, organization, agency, and company mentioned. "
+                f"Aim for at least 8-15 entities per chunk if the text supports it. "
+                f"Include diverse types — don't just extract the obvious main actors, "
+                f"also get analysts, commentators, affected organizations, and relevant "
+                f"institutions.\n\n{text}"
+            )},
         ]
 
         try:

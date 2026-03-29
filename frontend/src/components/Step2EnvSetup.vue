@@ -14,8 +14,8 @@
       </div>
 
       <div class="actions" v-if="entities.length > 0">
-        <button class="btn btn-primary" @click="$emit('proceed')">
-          Proceed to Simulation
+        <button class="btn btn-primary" :disabled="preparing" @click="$emit('proceed')">
+          {{ preparing ? 'Generating Profiles...' : 'Proceed to Simulation' }}
         </button>
       </div>
     </div>
@@ -33,6 +33,7 @@ export default {
   name: 'Step2EnvSetup',
   props: {
     entities: { type: Array, default: () => [] },
+    preparing: { type: Boolean, default: false },
   },
   emits: ['proceed'],
   methods: {
@@ -44,9 +45,25 @@ export default {
 </script>
 
 <style scoped>
+.step2 {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.step2 .card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 .entity-list {
-  max-height: 400px;
+  flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
+}
+.entity-item .tag {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .entity-item {
   display: flex;
@@ -55,13 +72,16 @@ export default {
   padding: var(--space-1) 0;
   border-bottom: 1px solid var(--border);
   font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
 }
-.entity-name { font-weight: 700; white-space: nowrap; }
+.entity-name { font-weight: 700; white-space: nowrap; flex-shrink: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; }
 .entity-summary {
   color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 .actions { margin-top: var(--space-3); }
 </style>
